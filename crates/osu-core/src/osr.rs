@@ -19,12 +19,23 @@
 //!   i64    timestamp, .NET ticks since 0001-01-01
 //!   i32    replay data length, -1 when absent
 //!   bytes  LZMA-compressed replay data
-//!   i64    online score id
+//!   i64    online score id — unreliable from 30000001, see below
+//!   i32    length of an appended blob, if present
+//!   bytes  that blob: an LZMA-alone container holding JSON
 //! ```
 //!
 //! **Strings are not length-prefixed the obvious way.** A lone `0x00` byte means an empty
 //! string; otherwise a `0x0b` marker is followed by a **.NET 7-bit-encoded** length and then
 //! UTF-8 bytes. Assuming a fixed-width length is what makes naive parsers of this format fail.
+//!
+//! **From game version 30000001 the trailing score id field stops being written, and the real one
+//! moves into the appended blob.** Measured over this machine's 355 lazer-era replays: the
+//! trailing field is `-1` in **all 355**, while the blob holds a real id in **326** of them — the
+//! two agree exactly once. So reading the trailing field alone reports 326 submitted plays as
+//! never-submitted, and that value is the index's `score_id` **and** the R2 object key that falls
+//! back to it (§5). The blob therefore wins whenever it decodes; the trailing field is only the
+//! answer when there is no blob. The blob is a standard LZMA-alone stream — `5d 00 00 20 00`, 2 MiB
+//! dictionary, then an 8-byte uncompressed size — so it needs no header reconstruction.
 
 use std::fmt;
 
@@ -70,12 +81,26 @@ pub struct Header {
     /// Lazer writes `md5("lazer-{user}-{date}")` here, not a hash of the replay data, so this is
     /// **not** a portable identity. See [`Header::key`].
     pub replay_md5: String,
+    /// `[count300, count100, count50, countGeki, countKatu, countMiss]`. What judgement names mean
+    /// depends on the ruleset (§6). Verified correct even in lazer-era files, which also carry a
+    /// newer named `statistics` object in the appended blob: over 355 of them, every one had real
+    /// counts here and the numbers agreed, so the index's accuracy derives from these and does not
+    /// need the newer encoding.
+    pub counts: [u16; 6],
     pub score: i32,
     pub max_combo: u16,
+    /// Lazer's "full combo". One byte, so a `u8 != 0`.
+    pub perfect: bool,
     pub mods: i32,
     /// .NET ticks, as stored.
     pub timestamp: i64,
-    /// Present only when the file carries one.
+    /// Mods lazer records that have **no legacy bitflag** and so appear in neither [`Header::mods`]
+    /// nor any dictionary built from it — the `Classic`-style ones. Measured: 181 lazer-era plays
+    /// carry mods in the appended blob against 172 with a bitflag, so about nine plays would be
+    /// mislabelled as having no mods at all without these. Empty for stable-era replays.
+    pub mods_names: Vec<String>,
+    /// Present only when the file carries one. `-1`, which both clients write for "never
+    /// submitted", is an absence and becomes `None`.
     pub online_score_id: Option<i64>,
 }
 
@@ -124,28 +149,19 @@ pub fn parse(buf: &[u8]) -> Result<Header, Error> {
     let player = read_string(buf, &mut at)?;
     let replay_md5 = read_string(buf, &mut at)?;
 
-    for _ in 0..6 {
-        take_u16(buf, &mut at)?; // count300, count100, count50, geki, katu, miss
+    let mut counts = [0u16; 6];
+    for slot in &mut counts {
+        *slot = take_u16(buf, &mut at)?;
     }
     let score = take_i32(buf, &mut at)?;
     let max_combo = take_u16(buf, &mut at)?;
-    take_u8(buf, &mut at)?; // perfect
+    let perfect = take_u8(buf, &mut at)? != 0;
     let mods = take_i32(buf, &mut at)?;
     read_string(buf, &mut at)?; // hit-error / HP graph
     let timestamp = take_i64(buf, &mut at)?;
 
     let data_length = take_i32(buf, &mut at)?;
-    let online_score_id = if data_length >= 0 {
-        let after_data = at.saturating_add(data_length as usize);
-        if buf.len() >= after_data + 8 {
-            at = after_data;
-            Some(take_i64(buf, &mut at)?)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let (online_score_id, mods_names) = read_tail(buf, data_length, at);
 
     Ok(Header {
         mode,
@@ -153,12 +169,95 @@ pub fn parse(buf: &[u8]) -> Result<Header, Error> {
         beatmap_md5,
         player,
         replay_md5,
+        counts,
         score,
         max_combo,
+        perfect,
         mods,
         timestamp,
+        mods_names,
         online_score_id,
     })
+}
+
+/// The online score id and the extra mods, out of whatever follows the compressed replay data.
+///
+/// Two layouts share this space and the newer one wins:
+///
+/// - **legacy** — a trailing `i64` score id. Correct for stable and for lazer before 30000001.
+/// - **appended** — that same `i64` (still written, but as `-1`), then an `i32` length and an
+///   LZMA-alone JSON blob. Read over the whole library: 354 of 355 lazer-era files disagree with
+///   the legacy field and 326 hold a real id only here.
+///
+/// Everything here is best-effort. A file whose blob is truncated, not LZMA, or not JSON falls
+/// back to the legacy field rather than failing — losing the extra fields of one replay is not a
+/// reason to lose the replay.
+fn read_tail(buf: &[u8], data_length: i32, after_header: usize) -> (Option<i64>, Vec<String>) {
+    if data_length < 0 {
+        return (None, Vec::new());
+    }
+    let body_end = after_header.saturating_add(data_length as usize);
+    let legacy = id_at(buf, body_end);
+
+    // The appended blob, if there is one, and only if its declared length really is there: a
+    // truncated or hostile length must not become a huge allocation.
+    let Some(blob_len) = length_at(buf, body_end + 8) else {
+        return (legacy, Vec::new());
+    };
+    let end = body_end
+        .saturating_add(12)
+        .saturating_add(blob_len as usize);
+    let Some(blob) = buf.get(body_end + 12..end) else {
+        return (legacy, Vec::new());
+    };
+
+    match decode_appended(blob) {
+        // The blob is authoritative when it decodes, even where it says "no online id": it is the
+        // newer and only-kept-in-sync copy, and the legacy field is `-1` in every such file.
+        Some((id, mods)) => (id.or(legacy), mods),
+        None => (legacy, Vec::new()),
+    }
+}
+
+/// The JSON lazer appends: `online_id`, the mods it could not express as a legacy bitflag, and
+/// the newer named `statistics`.
+#[derive(serde::Deserialize)]
+struct Appended {
+    online_id: Option<i64>,
+    #[serde(default)]
+    mods: Vec<AppendedMod>,
+}
+
+#[derive(serde::Deserialize)]
+struct AppendedMod {
+    acronym: String,
+}
+
+fn decode_appended(blob: &[u8]) -> Option<(Option<i64>, Vec<String>)> {
+    let mut raw = Vec::new();
+    lzma_rs::lzma_decompress(&mut &blob[..], &mut raw).ok()?;
+
+    let appended: Appended = serde_json::from_slice(&raw).ok()?;
+    let mods = appended
+        .mods
+        .into_iter()
+        .map(|entry| entry.acronym)
+        .collect();
+    Some((appended.online_id.filter(|id| *id > 0), mods))
+}
+
+/// A score id at an offset, `None` where the file is too short, and never a non-positive value —
+/// `-1` is what both clients write for "never submitted", which is an absence, not an id.
+fn id_at(buf: &[u8], at: usize) -> Option<i64> {
+    let bytes = buf.get(at..at.checked_add(8)?)?;
+    let value = i64::from_le_bytes(bytes.try_into().ok()?);
+    (value > 0).then_some(value)
+}
+
+fn length_at(buf: &[u8], at: usize) -> Option<i32> {
+    let bytes = buf.get(at..at.checked_add(4)?)?;
+    let value = i32::from_le_bytes(bytes.try_into().ok()?);
+    (value > 0).then_some(value)
 }
 
 fn take_u8(buf: &[u8], at: &mut usize) -> Result<u8, Error> {
@@ -266,6 +365,129 @@ mod tests {
             }
         }
         out.extend_from_slice(text.as_bytes());
+    }
+
+    /// A lazer-era replay: real judgement counts, and the appended blob that carries the online
+    /// score id and any mods with no legacy bitflag.
+    fn build_lazer(counts: [u16; 6], perfect: bool, legacy: i64, json: Option<&str>) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.push(0u8); // mode 0
+        out.extend_from_slice(&30000019i32.to_le_bytes()); // a real lazer encoder version
+        write_string(&mut out, MAP);
+        write_string(&mut out, "Poblin");
+        write_string(&mut out, "abcdef0123456789abcdef0123456789");
+        for count in counts {
+            out.extend_from_slice(&count.to_le_bytes());
+        }
+        out.extend_from_slice(&439_370i32.to_le_bytes());
+        out.extend_from_slice(&245u16.to_le_bytes());
+        out.push(u8::from(perfect));
+        out.extend_from_slice(&64i32.to_le_bytes()); // mods, DT
+        write_string(&mut out, ""); // hp graph
+        out.extend_from_slice(&TICKS.to_le_bytes());
+        out.extend_from_slice(&4i32.to_le_bytes()); // replay data length
+        out.extend_from_slice(b"body");
+        out.extend_from_slice(&legacy.to_le_bytes());
+
+        if let Some(json) = json {
+            let mut blob = Vec::new();
+            lzma_rs::lzma_compress(&mut json.as_bytes(), &mut blob).expect("compress");
+            out.extend_from_slice(&(blob.len() as i32).to_le_bytes());
+            out.extend_from_slice(&blob);
+        }
+        out
+    }
+
+    /// The judgements reach `Header` instead of being stepped over to find `mods`. The index
+    /// derives accuracy from them, so silently dropping them would have produced a library of
+    /// plays with no accuracy and no error.
+    #[test]
+    fn the_judgements_and_the_perfect_flag_are_kept() {
+        let file = build_lazer([110, 2, 0, 0, 0, 0], true, 1, None);
+        let header = parse(&file).expect("must parse");
+
+        assert_eq!(header.counts, [110, 2, 0, 0, 0, 0]);
+        assert!(header.perfect);
+        assert_eq!(header.score, 439_370);
+        assert_eq!(header.max_combo, 245);
+    }
+
+    /// **The bug this replaced.** Lazer-era files write `-1` in the trailing id field and the real
+    /// id only in the appended blob. Measured over 355 real files: 354 disagree and 326 hold a
+    /// real id here. Reading the trailing field alone reports 326 submitted plays as
+    /// never-submitted — and that value is the index's `score_id` *and* the R2 object key.
+    #[test]
+    fn the_appended_blob_supplies_the_online_id_the_legacy_field_lost() {
+        let json = r#"{"online_id":7403726280,"mods":[]}"#;
+        let file = build_lazer([110, 2, 0, 0, 0, 0], false, -1, Some(json));
+        let header = parse(&file).expect("must parse");
+
+        assert_eq!(header.online_score_id, Some(7_403_726_280));
+    }
+
+    /// The blob wins even when the legacy field carries something, because it is the newer copy
+    /// and the legacy one is `-1` in every real file that has a blob at all.
+    #[test]
+    fn the_appended_blob_wins_over_a_populated_legacy_field() {
+        let json = r#"{"online_id":7403726280,"mods":[]}"#;
+        let file = build_lazer([1, 0, 0, 0, 0, 0], false, 999, Some(json));
+        assert_eq!(parse(&file).unwrap().online_score_id, Some(7_403_726_280));
+    }
+
+    /// `-1` is what both clients write for "never submitted", so it is an absence rather than an
+    /// id — including when it comes from the blob.
+    #[test]
+    fn a_negative_online_id_in_the_blob_is_an_absence() {
+        let json = r#"{"online_id":-1,"mods":[]}"#;
+        let file = build_lazer([1, 0, 0, 0, 0, 0], false, -1, Some(json));
+        assert_eq!(parse(&file).unwrap().online_score_id, None);
+    }
+
+    /// Mods with no legacy bitflag live only in the blob. Measured: 181 lazer-era plays carry mods
+    /// there against 172 with a bitflag, so about nine plays would be mislabelled as having no
+    /// mods at all without this.
+    #[test]
+    fn the_appended_blob_carries_the_mods_that_have_no_bitflag() {
+        let json = r#"{"online_id":1,"mods":[{"acronym":"CL"},{"acronym":"SV2"}]}"#;
+        let file = build_lazer([1, 0, 0, 0, 0, 0], false, 1, Some(json));
+        let header = parse(&file).expect("must parse");
+
+        assert_eq!(header.mods_names, ["CL", "SV2"]);
+        // The bitflag field is untouched by any of this and still says DT.
+        assert_eq!(header.mods, 64);
+    }
+
+    /// Losing the extra fields of one replay is not a reason to lose the replay. A blob that is
+    /// not LZMA, or not JSON, or truncated, falls back to the legacy field.
+    #[test]
+    fn an_unreadable_appended_blob_falls_back_to_the_legacy_id() {
+        for json in ["not lzma at all", "", "{ unclosed"] {
+            let file = build_lazer([1, 0, 0, 0, 0, 0], false, 4_360_173_832, Some(json));
+            let header = parse(&file).expect("must parse");
+            assert_eq!(header.online_score_id, Some(4_360_173_832));
+            assert!(header.mods_names.is_empty());
+        }
+    }
+
+    /// A declared blob length reaching past the end of the file must be refused rather than
+    /// allocated: the length is attacker-controlled bytes.
+    #[test]
+    fn an_overlong_blob_length_is_ignored() {
+        let mut file = build_lazer([1, 0, 0, 0, 0, 0], false, 4_360_173_832, None);
+        file.extend_from_slice(&i32::MAX.to_le_bytes());
+        file.extend_from_slice(b"tiny");
+
+        let header = parse(&file).expect("must parse");
+        assert_eq!(header.online_score_id, Some(4_360_173_832));
+    }
+
+    /// A stable-era replay has no blob at all, so nothing changes about how it is read.
+    #[test]
+    fn a_legacy_replay_has_no_blob_and_no_extra_mods() {
+        let file = build_lazer([1, 0, 0, 0, 0, 0], false, 4_360_173_832, None);
+        let header = parse(&file).expect("must parse");
+        assert_eq!(header.online_score_id, Some(4_360_173_832));
+        assert!(header.mods_names.is_empty());
     }
 
     const MAP: &str = "144e76e9bd39f65370d54689255f31ec";

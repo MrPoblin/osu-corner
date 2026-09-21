@@ -19,7 +19,9 @@
 use crate::collect::{self, Known};
 use crate::ledger::{Blob, Kind, Ledger};
 use crate::mirror::{Fetched, Fetcher};
+use crate::pp;
 use crate::{Source, SourceKind};
+use osu_core::osr;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
@@ -237,6 +239,85 @@ pub fn build(
         unavailable = unheld.clone();
     }
 
+    // ------------------------------------------------------------ stars and pp
+    //
+    // Every play is priced for real rather than sampled, because this is what the index stores.
+    // Plays are grouped by map first so a map is decoded once instead of once per play — a map
+    // averages 2.65 plays here (§16) and decoding is the expensive half.
+    let pricing = Instant::now();
+    let mut by_map: HashMap<String, Vec<pp::Play>> = HashMap::new();
+    let mut unpriced = 0u64;
+
+    // Driven by the **staged filenames**, which are the deduplicated set: the ledger holds a row
+    // per `.osr` per source, so its 15,632 replays collapse to the 8,000 plays the index will
+    // contain. Pricing the ledger's rows priced half the library twice and took 74 seconds to do
+    // it. These names are also exactly what the index reads, so the two cannot disagree.
+    for entry in fs::read_dir(work.join("replays"))
+        .map_err(|error| format!("cannot read {}\\replays: {error}", work.display()))?
+    {
+        let name = entry.map_err(|error| error.to_string())?.file_name();
+        let Some(key) = name.to_str().and_then(|name| name.strip_suffix(".osr")) else {
+            continue;
+        };
+        let Some((md5, _)) = key.split_once('-') else {
+            unpriced += 1;
+            continue;
+        };
+        let Ok(bytes) = fs::read(work.join("replays").join(format!("{key}.osr"))) else {
+            unpriced += 1;
+            continue;
+        };
+        match osr::parse(&bytes) {
+            Ok(header) => by_map.entry(md5.to_owned()).or_default().push(pp::Play {
+                mods: header.mods,
+                counts: header.counts,
+                max_combo: header.max_combo,
+                mode: header.mode,
+                mods_names: header.mods_names.clone(),
+                version: header.version,
+            }),
+            Err(_) => unpriced += 1,
+        }
+    }
+
+    let maps_priced = by_map.len();
+    let mut priced = 0u64;
+    let mut stars: Vec<f64> = Vec::new();
+    let mut pps: Vec<f64> = Vec::new();
+
+    for (md5, plays) in &by_map {
+        let Ok(bytes) = fs::read(work.join("maps").join(format!("{md5}.osu"))) else {
+            unpriced += plays.len() as u64;
+            continue;
+        };
+        let Ok(map) = pp::Map::parse(&bytes) else {
+            unpriced += plays.len() as u64;
+            continue;
+        };
+        for play in plays {
+            match map.attributes(play) {
+                Ok(attributes) => {
+                    priced += 1;
+                    stars.push(attributes.stars);
+                    pps.push(attributes.pp);
+                }
+                // Refused as too suspicious, or not calculable. Counted rather than hidden.
+                Err(_) => unpriced += 1,
+            }
+        }
+    }
+
+    let span = |values: &mut Vec<f64>| match (
+        values.iter().cloned().fold(f64::INFINITY, f64::min),
+        values.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+    ) {
+        (low, high) if low.is_finite() && high.is_finite() => (low, high),
+        _ => (0.0, 0.0),
+    };
+    let (star_low, star_high) = span(&mut stars);
+    let (pp_low, pp_high) = span(&mut pps);
+    let pricing_seconds = pricing.elapsed().as_secs_f64();
+
     // ----------------------------------------------------------------- report
 
     println!("\n{}", work.display());
@@ -270,6 +351,11 @@ pub fn build(
             "added this run; "
         }
     );
+    println!(
+        "  priced   {priced:>6} plays over {maps_priced} maps, {unpriced} not priced   \
+         [{pricing_seconds:.1}s]  stars {star_low:.2}–{star_high:.2}, pp {pp_low:.1}–{pp_high:.1}"
+    );
+    println!("  by       {}", pp::ROSU_PP);
 
     if keyless > 0 {
         println!(

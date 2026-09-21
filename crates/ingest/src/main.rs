@@ -10,6 +10,7 @@ mod collect;
 mod ledger;
 mod library;
 mod mirror;
+mod pp;
 
 use serde::Deserialize;
 use std::fs;
