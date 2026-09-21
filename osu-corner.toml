@@ -1,18 +1,16 @@
-# Everything a clone changes. Secrets are not here — see .dev.vars.example.
+# Committed defaults, and deliberately nothing personal.
+#
+# Your own values go in `osu-corner.local.toml` beside this file, which is gitignored. It is
+# merged over this one when the config loads: tables merge key by key, and arrays are replaced
+# wholesale — so a `[[source]]` list there replaces the example below rather than joining it.
+#
+# Keeping personal values out of this file is what lets a fresh clone build and deploy untouched.
+# A path from somebody's machine is wrong for everybody else, so it is not a default at all.
 
 [site]
 name = "osu! corner"
 # The mount path is not here: it has to be Vite's `base`, so it lives in
 # apps/corner/vite.config.ts, and the route in wrangler.toml must agree with it.
-
-# The account this corner belongs to. `id` is what the profile route fetches. `names` is the
-# whitelist ingest uses for replays — a replay keeps the name it was played under, so a rename
-# means a new alias. Ingest reports replays that matched nothing, so a missing one shows up.
-#
-# Several [[user]] blocks are supported, for a collection holding more than one player.
-[[user]]
-id = 31220620
-names = ["Poblin"]
 
 [r2]
 # Where the .osr files are served from, and the bucket they upload to. Both matter only once
@@ -24,3 +22,24 @@ bucket = ""
 # Tried in order, for the two things this project does not host: the .osu file and the audio.
 # Must match the CSP in apps/corner/public/_headers.
 urls = ["https://osu.direct", "https://catboy.best"]
+
+# ---------------------------------------------------------------------------------------------
+# In osu-corner.local.toml, in this shape:
+#
+#   [[source]]
+#   kind    = "lazer"                       # or "stable"
+#   path    = "/path/to/your/osu-lazer"     # lazer: the folder holding client.realm and files/
+#   enabled = true
+#
+#   [[source]]
+#   kind    = "stable"                      # Songs/ + Scores.db + Data/r/
+#   path    = "/path/to/your/osu"           # stable: the folder holding osu!.db and Songs/
+#   enabled = true
+#
+#   [[user]]
+#   id    = 0                               # your numeric osu! id, for the profile route
+#   names = ["YourName"]                    # every name the account has played under
+#
+# A disabled source is never opened, so pointing at an uninstalled game is harmless. An enabled
+# source whose root is missing is a hard error, which is the difference between "off on purpose"
+# and "silently contributing nothing".

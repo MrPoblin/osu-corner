@@ -1,11 +1,16 @@
 [package]
 name = "osu-ingest"
-description = "The local ingest binary: exported replays in, the library index and R2 objects out."
+description = "The local ingest binary: the library's game folders in, the index and R2 objects out."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
 [dependencies]
+osu-core.workspace = true
+rayon.workspace = true
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde.workspace = true
+serde_json.workspace = true
 toml = "1"
+ureq = { version = "3.4.2", features = ["json"] }

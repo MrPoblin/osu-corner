@@ -8,6 +8,10 @@
 *.pem
 *.key
 
+# Your own config values. The committed osu-corner.toml holds generic defaults; this file is
+# merged over them, so it is yours and is never shared.
+osu-corner.local.toml
+
 node_modules/
 .pnpm-store/
 *.tsbuildinfo
@@ -19,10 +23,9 @@ dist/
 # Emitted by `wrangler types`.
 worker-configuration.d.ts
 
-# BeatmapExporter's output — several GB of beatmaps and audio, and the ingest ledger. Both
-# belong to whoever runs the ingest, not to the repository.
-lazerexport/
-osu-ingest.state.db
+# The local working set: the played .osu files, the .osr files and the ingest ledger. Materialised
+# out of the game folders on first ingest — it belongs to whoever runs the ingest, not to the repo.
+library/
 
 .wrangler/
 

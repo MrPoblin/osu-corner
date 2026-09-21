@@ -45,27 +45,31 @@ recorded, and are filled in later.
    pnpm exec wrangler login
    ```
 
-2. **Create an R2 bucket** in the Cloudflare dashboard, then put its public hostname and
-   the bucket name into `osu-corner.toml`.
+2. **Point it at your installs.** `osu-corner.toml` is committed and holds only generic
+   defaults. Your own values belong in `osu-corner.local.toml` beside it, which is gitignored and
+   merged over the defaults — the shape to copy is at the bottom of `osu-corner.toml`. Add a
+   `[[source]]` for each game install you want read.
 
-3. **Register an osu! OAuth application** at
-   [osu.ppy.sh/home/account/edit](https://osu.ppy.sh/home/account/edit). Use the
-   client-credentials grant, so the application callback URL stays empty, then copy
-   `.dev.vars.example` to `.dev.vars` and fill in the id and secret. Production uses
-   `wrangler secret put` instead, so the values never enter the repository.
-
-4. **Set your account** in `osu-corner.toml` — `[[user]] id` is your numeric osu! id, and
+3. **Set your account** in that same local file — `[[user]] id` is your numeric osu! id, and
    `names` must list every username the account has played under. A rename means a new
    alias; ingest reports replays that matched no configured account, so a missing one is
    visible rather than silent.
 
-5. **Export your replays** with
-   [BeatmapExporter](https://github.com/kabiiQ/BeatmapExporter), which reads osu!lazer's
-   database. Run it twice: `Replay` mode and `Folder` mode. Both write into one directory,
-   so ingest consumes a single export.
+4. **Create an R2 bucket** in the Cloudflare dashboard, then put its public hostname and
+   the bucket name into the local file.
 
-6. **Build the index and upload** — `cargo run -p osu-ingest -- <export-dir>`.
-   *Not implemented yet.*
+5. **Register an osu! OAuth application** at
+   [osu.ppy.sh/home/account/edit](https://osu.ppy.sh/home/account/edit). Use the
+   client-credentials grant, so the application callback URL stays empty, then copy
+   `.dev.vars.example` to `.dev.vars` and fill in the id and secret. Production uses
+   `wrangler secret put` instead, so the values never enter the repository. Ingest uses the
+   same two values: a beatmap that **neither** of your installs holds can still be fetched,
+   because its MD5 is enough for the osu! API to name it and a mirror then serves the file.
+   **Without them the run still succeeds** and simply reports those maps as not looked for.
+
+6. **Collect, then build the index** — `cargo run -p osu-ingest`. It reads the game folders
+   directly, so there is no export step and no third-party tool. *Index writing not
+   implemented yet.*
 
 7. **Deploy.**
 
@@ -102,10 +106,11 @@ Vite rewrites the bundle and `index.html` for you; anything hand-written — a f
 
 | File | Holds | Committed |
 |---|---|---|
-| `osu-corner.toml` | your account, the R2 bucket, the beatmap mirror list | yes — it is the file a clone edits |
+| `osu-corner.toml` | generic defaults — the site name, the mirror list, and the shape of everything else | yes |
+| `osu-corner.local.toml` | **your** values — install paths, your account, the R2 bucket. Merged over the defaults; arrays replace rather than append | **no** — gitignored |
 | `apps/corner/vite.config.ts` | the mount path | yes |
 | `wrangler.toml` | the Worker name, assets, and later the route | yes |
-| `.dev.vars` | the osu! client id and secret | **no** — gitignored |
+| `.dev.vars` | the osu! client id and secret — read by **both** the Worker and `osu-ingest`, the latter to fetch a beatmap no install holds | **no** — gitignored |
 
 ## Layout notes
 
