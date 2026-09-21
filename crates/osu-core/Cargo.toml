@@ -1,0 +1,9 @@
+[package]
+name = "osu-core"
+description = "The osu! domain: .osr and .osu parsing, the library index format, and pp."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]

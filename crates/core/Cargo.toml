@@ -1,0 +1,11 @@
+[package]
+name = "corner-core"
+description = "Runtime-agnostic cache logic. No I/O, no runtime, no bindings."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Stays empty on purpose: a dependency here means the code belongs in an adapter crate
+# instead. In particular this crate must never depend on `worker` — see the crate docs.
+[dependencies]

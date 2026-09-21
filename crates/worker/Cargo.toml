@@ -1,0 +1,16 @@
+[package]
+name = "osu-worker"
+description = "Thin workers-rs adapter. Plumbing only; logic belongs in corner-core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+worker.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+corner-core.workspace = true

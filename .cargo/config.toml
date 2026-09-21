@@ -1,0 +1,10 @@
+# wasm-bindgen's catch wrappers need an externref table and it refuses to build without
+# reference-types, which wasm32-unknown-unknown does not enable by default ("externref
+# table required for catch wrappers"). Kept here rather than in RUSTFLAGS so the setting
+# travels with the repository.
+#
+# This pairs with Cargo.toml's release profile: that profile deliberately does not set
+# `strip = true`, because stripping drops the target_features custom section and
+# wasm-bindgen then cannot see that reference-types is on.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+reference-types"]

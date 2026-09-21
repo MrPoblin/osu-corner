@@ -1,0 +1,17 @@
+name = "osu-corner"
+compatibility_date = "2025-04-01"
+
+# `run_worker_first` keeps the assets router first for everything except /api/*, so a static
+# request never invokes the script or counts against the daily request budget.
+main = "crates/worker/build/index.js"
+run_worker_first = ["/api/*"]
+
+# No route yet: this publishes to osu-corner.<account>.workers.dev. The route onto a real
+# domain is attached later, and must match `base` in apps/corner/vite.config.ts.
+workers_dev = true
+preview_urls = true
+
+[assets]
+# The asset root. The app builds nested under its mount path — see vite.config.ts.
+directory = "apps/corner/dist"
+not_found_handling = "404-page"

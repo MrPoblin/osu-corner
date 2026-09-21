@@ -1,0 +1,6 @@
+# Copy to .dev.vars and fill in. Locally `wrangler dev` reads it; production uses
+# `wrangler secret put`, so the values never enter the repository.
+#
+# Register at https://osu.ppy.sh/home/account/edit — client credentials, callback URL empty.
+OSU_CLIENT_ID=
+OSU_CLIENT_SECRET=

@@ -1,0 +1,32 @@
+# Secrets. `.dev.vars` is read by `wrangler dev`; production uses `wrangler secret put`.
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+
+target/
+dist/
+# Emitted by `wrangler types`.
+worker-configuration.d.ts
+
+# BeatmapExporter's output — several GB of beatmaps and audio, and the ingest ledger. Both
+# belong to whoever runs the ingest, not to the repository.
+lazerexport/
+osu-ingest.state.db
+
+.wrangler/
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*

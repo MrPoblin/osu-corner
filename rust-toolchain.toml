@@ -1,0 +1,6 @@
+# Pins the compiler everywhere, and declares the components and the wasm target — `rustup show`
+# installs all of it, so CI needs no Rust setup action.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

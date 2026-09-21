@@ -1,0 +1,3 @@
+# LF everywhere regardless of core.autocrlf: CI runs on Linux and Cloudflare parses _headers
+# and ci.yml, so the bytes must not depend on whose machine committed.
+* text=auto eol=lf

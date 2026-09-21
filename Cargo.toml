@@ -1,0 +1,26 @@
+[workspace]
+members = ["crates/core", "crates/osu-core", "crates/worker", "crates/ingest"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+
+[workspace.dependencies]
+corner-core = { path = "crates/core" }
+osu-core = { path = "crates/osu-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+worker = "0.8.6"
+
+# Free-plan limits: 64 MiB uncompressed bundle, 1 s Worker startup.
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+# Neither `strip = true` nor `panic = "abort"` belongs here. `strip` drops the
+# target_features custom section, so wasm-bindgen cannot see that reference-types is on
+# and refuses to generate catch wrappers ("externref table required for catch wrappers");
+# `panic = "abort"` makes that path mandatory. wasm-bindgen #5205, workers-rs #1014. The
+# flag that is actually needed is in .cargo/config.toml.

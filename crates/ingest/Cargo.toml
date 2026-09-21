@@ -1,0 +1,11 @@
+[package]
+name = "osu-ingest"
+description = "The local ingest binary: exported replays in, the library index and R2 objects out."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+toml = "1"

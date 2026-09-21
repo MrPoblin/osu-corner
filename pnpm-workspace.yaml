@@ -1,0 +1,21 @@
+# pnpm 12 reads only auth and registry settings from .npmrc and ignores everything else
+# silently, so every setting has to live here. There is no .npmrc in this repository.
+packages:
+  - "apps/*"
+
+# Exact versions, so a compromised patch release cannot arrive via a fresh resolve.
+saveExact: true
+
+# Fail rather than warn on a mismatched peer graph or an unpinned engine.
+strictPeerDependencies: true
+engineStrict: true
+
+# Refuse packages published in the last 3 days. The value is in MINUTES.
+minimumReleaseAge: 4320
+
+# Lifecycle scripts do not run unless a package is allowed here. pnpm 12 renamed this
+# from `onlyBuiltDependencies`, which still appears in `pnpm config list` but is no
+# longer applied. Anything asking to join this list should be read first.
+allowBuilds:
+  esbuild: true # fetches its platform binary in a postinstall step
+  workerd: true # Cloudflare's runtime, pulled in by wrangler for local dev

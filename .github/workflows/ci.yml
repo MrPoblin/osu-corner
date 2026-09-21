@@ -1,0 +1,137 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Security advisories appear independently of our commits, so the Rust advisory scan runs
+  # on a timer rather than gating unrelated pull requests on a disclosure we did not cause
+  # and cannot fix in the same change.
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+# Least privilege: nothing here writes to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    steps:
+      # Actions are pinned by commit SHA. A tag is mutable, and a compromised action runs
+      # with the workflow's token; a SHA cannot be moved.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      # --frozen-lockfile is the primary supply-chain control: what runs is what was
+      # reviewed, and a resolution that drifts fails instead of silently passing.
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # The root scripts are what a developer runs, and CI runs the same entry point rather
+      # than a recursive form that could drift from it.
+      - name: Typecheck
+        run: pnpm check
+
+      - name: Build
+        run: pnpm build
+
+      - name: Audit production dependencies
+        run: pnpm audit --audit-level high --prod
+
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    env:
+      GIT_SHA: ${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml pins the compiler and declares the components and the wasm
+      # target. `rustup show` installs all of it, which is why this workflow needs no
+      # third-party Rust setup action.
+      - name: Install toolchain
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # The worker crate is compiled for wasm32 in production, so it is linted for wasm32;
+      # everything else is linted for the host. One lint configuration per artefact.
+      - name: Clippy (host crates)
+        run: cargo clippy -p corner-core -p osu-core -p osu-ingest --all-targets -- -D warnings
+
+      - name: Clippy (worker, wasm32)
+        run: cargo clippy -p osu-worker --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Test
+        run: cargo test -p corner-core -p osu-core
+
+      - name: Install worker-build
+        run: cargo install worker-build --version 0.8.6 --locked
+
+      # Keeping the Rust → wasm toolchain verified on every push, while the surface is one
+      # handler, is far cheaper than discovering it is broken on the day a route has to
+      # work. This is the reason the worker crate exists before it has anything to serve.
+      - name: Build worker to wasm
+        run: worker-build --release
+        working-directory: crates/worker
+
+  advisory:
+    name: rust advisories
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install toolchain
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-audit-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-audit-
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit
+        run: cargo audit

@@ -1,0 +1,22 @@
+{
+  "name": "osu-corner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A replay library and profile corner for osu! — clone it, point it at your own replays, deploy it.",
+  "packageManager": "pnpm@12.4.2",
+  "engines": {
+    "node": ">=24.21.0",
+    "pnpm": ">=12.4.2"
+  },
+  "scripts": {
+    "build": "pnpm --filter \"./apps/*\" run build",
+    "check": "pnpm --filter \"./apps/*\" run check",
+    "dev": "pnpm --filter @osu-corner/corner run dev",
+    "preview": "pnpm build && wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.132.0"
+  }
+}
