@@ -341,6 +341,7 @@ fn the_frame_is_an_upper_bound_that_holds() {
     // it is the only tightness evidence taiko, catch and mania can have: no osu!-side converted total
     // exists for any of their plays here (§8).
     let mut closest_by_mode: BTreeMap<String, (f64, String)> = BTreeMap::new();
+    let mut any_by_mode: BTreeMap<String, (f64, String)> = BTreeMap::new();
     let mut frames: HashMap<String, crate::score::Frame> = HashMap::new();
     let mut closest = (0.0f64, String::new());
     let mut rows: Vec<String> = Vec::new();
@@ -455,6 +456,24 @@ fn the_frame_is_an_upper_bound_that_holds() {
             }
         }
 
+        // The closest play of *any* shape, which is the only tightness figure a mode has when none of
+        // its plays left nothing on the table — taiko, in this library, where all 17 dropped something.
+        if ceiling > 0 {
+            let ratio = recorded as f64 / ceiling as f64;
+            let entry = any_by_mode
+                .entry(format!("{mode:?}"))
+                .or_insert((0.0, String::new()));
+            if ratio > entry.0 {
+                *entry = (
+                    ratio,
+                    format!(
+                        "recorded {recorded} of frame {ceiling}, combo {}/{}, counts {:?}",
+                        header.max_combo, frame.max_combo, header.counts
+                    ),
+                );
+            }
+        }
+
         // A perfect full combo is the play closest to the ceiling, so it is where tightness shows.
         // Only osu!standard is asked: in the other three modes `frame.max_combo` counts *scoring*
         // objects, which is not what the `.osr` records — taiko's maximum combo counts the drum-roll
@@ -489,6 +508,10 @@ fn the_frame_is_an_upper_bound_that_holds() {
     }
     println!("  closest no-miss play to its frame, per mode:");
     for (mode, (ratio, detail)) in &closest_by_mode {
+        println!("    {mode:<6} {ratio:.4} of the ceiling   {detail}");
+    }
+    println!("  closest play of any shape, per mode:");
+    for (mode, (ratio, detail)) in &any_by_mode {
         println!("    {mode:<6} {ratio:.4} of the ceiling   {detail}");
     }
     println!("  perfect full combos:           {perfect}");

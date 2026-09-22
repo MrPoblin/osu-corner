@@ -627,17 +627,24 @@ pub const fn mode_of_byte(mode: u8) -> Mode {
 /// play was in.
 pub fn frame_for(map: &mut Beatmap, mode: Mode) -> Frame {
     let (object_count, drain) = object_count_and_drain_length(map);
-    let peppy = peppy_stars(
-        f64::from(map.hp_drain_rate),
-        f64::from(map.overall_difficulty),
-        f64::from(map.circle_size),
-        object_count,
-        drain,
-    );
+    let peppy_of = |cs: f64| {
+        peppy_stars(
+            f64::from(map.hp_drain_rate),
+            f64::from(map.overall_difficulty),
+            cs,
+            object_count,
+            drain,
+        )
+    };
+    let peppy = peppy_of(f64::from(map.circle_size));
 
     match mode {
         Mode::Osu => frame(map, f64::from(peppy)),
-        Mode::Taiko => frame_taiko(map, peppy),
+        // **taiko forces `CircleSize = 2` before deriving the peppy stars.** Stable's
+        // `HitObjectManagerTaiko` did exactly that and lazer reproduces it (#38203), so a taiko play's
+        // legacy multiplier is derived from a beatmap whose circle size is 2 rather than the map's own
+        // — which differs on nearly every map, since 2 is not a typical taiko `CircleSize`.
+        Mode::Taiko => frame_taiko(map, peppy_of(2.0)),
         Mode::Catch => frame_catch(map, f64::from(peppy)),
         // mania's frame is the same four constants for every map, which is why this arm ignores the
         // values above entirely.
@@ -1109,8 +1116,10 @@ fn kiai(value: i32) -> i32 {
 /// Three arms, and two of them pay bonus rather than accuracy:
 ///
 /// - **`Hit`** — 300 of accuracy, the combo term, and one combo.
-/// - **`DrumRoll`** — nothing itself, but its nested ticks pay 300 of *bonus* each, scaled by kiai at
-///   the **roll's** start and by 20% more if the roll is strong. Ticks never give combo.
+/// - **`DrumRoll`** — nothing itself, but its ticks pay 300 of *bonus* each, scaled by kiai at the
+///   **roll's** start and by 20% more if the roll is strong. Ticks never give combo. The tick
+///   *spacing* is stable's (`getSliderTaikoMinHitDelay`), not the modern client's nested-object
+///   generator — see the note on `min_hit_delay` below.
 /// - **`Swell`** — 300 of bonus plus its combo term, doubled, and `n + 1` nested ticks of 300 bonus
 ///   each where `n` comes from the duration. Swells never give combo either, so a taiko map's maximum
 ///   combo is exactly its number of `Hit` objects.
@@ -1121,9 +1130,35 @@ pub fn frame_taiko(map: &Beatmap, peppy: i32) -> Frame {
 
     let slider_multiplier = map.slider_multiplier;
     let slider_tick_rate = map.slider_tick_rate;
-    // `TickRate = difficulty.SliderTickRate == 3 ? 3 : 4` — every map that is not exactly 3 gets 4.
-    let tick_rate = if slider_tick_rate == 3.0 { 3.0 } else { 4.0 };
     let format_version = map.format_version;
+
+    // **`getSliderTaikoMinHitDelay`** — stable's tick spacing for a drum roll, which is *not* the
+    // modern client's `DrumRoll.CreateNestedHitObjects`.
+    //
+    // This is the one place a legacy simulator is not a straight read of today's objects. The simulator
+    // walks this loop itself rather than recursing into a roll's nested ticks, because converting a
+    // stable-era play has to reproduce what **stable** scored: lazer replaced its own generator here
+    // under the commit message *"not porting stable quirk"* (#38203), so taking the nested ticks would
+    // count a roll the way a lazer play would be scored, not the way this play was.
+    let min_hit_delay = |beat_len: f64| -> f64 {
+        let mut max_rate = if format_version >= 8
+            && (slider_tick_rate == 3.0 || slider_tick_rate == 6.0 || slider_tick_rate == 1.5)
+        {
+            beat_len / 6.0
+        } else {
+            beat_len / 8.0
+        };
+
+        // Stable's clamp to a plausible ms-per-tick range.
+        while max_rate < 60.0 {
+            max_rate *= 2.0;
+        }
+        while max_rate > 120.0 {
+            max_rate /= 2.0;
+        }
+
+        max_rate
+    };
     // A play on a map of **this** ruleset is native, and its sliders are always drum rolls. A convert
     // may have them split into runs of hit circles instead, which is the one place taiko's converter
     // changes how many scoring objects a file produces.
@@ -1135,9 +1170,31 @@ pub fn frame_taiko(map: &Beatmap, peppy: i32) -> Frame {
     /// mutable access at all: a roll's duration comes from the `.osu`'s own stated path length, so the
     /// lazily-built slider curve is never needed here (unlike osu!standard's frame).
     enum Plan {
-        Hit { kiai: bool },
-        Roll { ticks: i32, kiai: bool },
-        Swell { ticks: i64, kiai_at_end: bool },
+        Hit {
+            start: f64,
+            kiai: bool,
+        },
+        Roll {
+            start: f64,
+            end: f64,
+            min_hit_delay: f64,
+            kiai: bool,
+        },
+        Swell {
+            start: f64,
+            ticks: i64,
+            kiai_at_end: bool,
+        },
+    }
+
+    // Every variant carries its own start time so that the roll pass below can ask for the *next*
+    // object's without knowing which kind it is.
+    fn plan_start(plan: &Plan) -> f64 {
+        match plan {
+            Plan::Hit { start, .. } | Plan::Roll { start, .. } | Plan::Swell { start, .. } => {
+                *start
+            }
+        }
     }
 
     // A swell's ticks are derived from its duration alone, so a hold — mania's `IHasDuration`, which
@@ -1153,6 +1210,7 @@ pub fn frame_taiko(map: &Beatmap, peppy: i32) -> Frame {
             .is_some_and(|point| point.kiai);
 
         Plan::Swell {
+            start,
             // `for (i = 0; i <= halfSpinsRequiredForCompletion; i++)`.
             ticks: i64::from(half_spins) + 1,
             kiai_at_end,
@@ -1177,6 +1235,7 @@ pub fn frame_taiko(map: &Beatmap, peppy: i32) -> Frame {
             match &object.kind {
                 HitObjectKind::Circle(_) => vec![(
                     Plan::Hit {
+                        start,
                         kiai: kiai_at_start,
                     },
                     strong,
@@ -1243,6 +1302,7 @@ pub fn frame_taiko(map: &Beatmap, peppy: i32) -> Frame {
 
                             hits.push((
                                 Plan::Hit {
+                                    start: time,
                                     kiai: kiai_at_start,
                                 },
                                 has_finish(samples),
@@ -1258,21 +1318,14 @@ pub fn frame_taiko(map: &Beatmap, peppy: i32) -> Frame {
                         return hits;
                     }
 
-                    // `for (double t = StartTime; t < EndTime + tickSpacing / 2; t += tickSpacing)`,
-                    // with the tick spacing built from the *unadjusted* beat length.
-                    let roll_tick_spacing = beat_len / tick_rate;
-                    let end = start + duration;
-                    let mut ticks = 0i32;
-                    let mut time = start;
-
-                    while time < end + roll_tick_spacing / 2.0 {
-                        ticks += 1;
-                        time += roll_tick_spacing;
-                    }
-
+                    // The roll's tick count cannot be resolved here: stable drops the final tick when
+                    // the **next** object follows too closely, so it needs its neighbour. Recorded as a
+                    // span and counted in one pass below.
                     vec![(
                         Plan::Roll {
-                            ticks,
+                            start,
+                            end: start + duration,
+                            min_hit_delay: min_hit_delay(beat_len),
                             kiai: kiai_at_start,
                         },
                         strong,
@@ -1289,9 +1342,55 @@ pub fn frame_taiko(map: &Beatmap, peppy: i32) -> Frame {
         })
         .collect();
 
-    for (plan, strong) in plans {
+    // `HittableEndTime`: a roll's last tick is dropped when the next object arrives within one
+    // min-hit-delay of the roll's own end. Only this rule needs a *neighbour* — and a roll that follows
+    // a roll is measured against that roll's own delay rather than its start time — which is why the
+    // tick count is resolved here rather than in the per-object mapping above.
+    let roll_ticks: Vec<i32> = (0..plans.len())
+        .map(|i| match &plans[i].0 {
+            Plan::Roll {
+                start,
+                end,
+                min_hit_delay,
+                ..
+            } => {
+                let next_hittable_start = plans.get(i + 1).map(|(next, _)| match next {
+                    Plan::Roll {
+                        min_hit_delay: next_delay,
+                        ..
+                    } => plan_start(next) - *next_delay,
+                    _ => plan_start(next),
+                });
+
+                let delay = min_hit_delay.trunc();
+                let endpoint_hittable = match next_hittable_start {
+                    None => true,
+                    Some(next_start) => next_start - (*end + delay) > delay,
+                };
+                let hittable_end = if endpoint_hittable {
+                    *end + delay
+                } else {
+                    *end
+                };
+
+                // `for (double i = StartTime; i < hittableEndTime; i += minHitDelay)`.
+                let mut ticks = 0i32;
+                let mut time = *start;
+
+                while time < hittable_end {
+                    ticks += 1;
+                    time += min_hit_delay;
+                }
+
+                ticks
+            }
+            _ => 0,
+        })
+        .collect();
+
+    for (i, (plan, strong)) in plans.into_iter().enumerate() {
         match plan {
-            Plan::Hit { kiai: in_kiai } => {
+            Plan::Hit { kiai: in_kiai, .. } => {
                 // Lazer's order matters: the combo term is added, *then* kiai scales the whole thing,
                 // *then* a strong object doubles both parts. Note `combo_increase` is the kiai'd total
                 // minus the un-kiai'd 300, not a difference of two kiai'd values.
@@ -1313,12 +1412,13 @@ pub fn frame_taiko(map: &Beatmap, peppy: i32) -> Frame {
                 frame.combo_score += i64::from(combo_increase);
                 combo += 1;
             }
-            Plan::Roll {
-                ticks,
-                kiai: in_kiai,
-            } => {
-                // Applied **per tick**, which is what lazer does: kiai first, read at the roll's start
-                // time, then the strong bonus of a fifth more.
+            Plan::Roll { kiai: in_kiai, .. } => {
+                let ticks = roll_ticks[i];
+                // Applied **per tick**, and a tick passes through *both* strong clauses: the fifth more
+                // that `DrumRollTick` gets of its own, and then the doubling every strongable object
+                // takes — which a tick does, since `DrumRollTick : TaikoStrongableHitObject`. The
+                // doubling normally splits across the combo and non-combo portions; a tick has no combo
+                // portion, so all of it lands on the bonus.
                 let mut per_tick = 300;
 
                 if in_kiai {
@@ -1326,18 +1426,24 @@ pub fn frame_taiko(map: &Beatmap, peppy: i32) -> Frame {
                 }
                 if strong {
                     per_tick += per_tick / 5;
+                    per_tick *= 2;
                 }
 
                 frame.bonus_score += i64::from(per_tick * ticks);
                 // `DrumRollTick`'s result is a `SmallBonus`, worth 10 of standardised bonus.
                 standardised_bonus += 10 * i64::from(ticks);
             }
-            Plan::Swell { ticks, kiai_at_end } => {
+            Plan::Swell {
+                ticks, kiai_at_end, ..
+            } => {
                 // The swell's own nested ticks pay legacy bonus only: `SwellTick`'s result is
                 // `IgnoreHit`, whose base score is zero. So a swell adds standardised bonus *nothing at
                 // all*, which is why a map whose only bonus objects are swells has a bonus ratio of
                 // exactly zero.
                 frame.bonus_score += 300 * ticks;
+                // The ticks are `IgnoreHit` and pay nothing standardised — but the swell *itself* is a
+                // `LargeBonus`, worth 50, and it lands in the ratio's numerator.
+                standardised_bonus += 50;
 
                 let base = 300;
                 let mut total = base + taiko_combo_term(base, peppy, combo);

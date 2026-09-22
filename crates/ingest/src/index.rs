@@ -29,13 +29,27 @@ use std::path::Path;
 /// tool's implementation of lazer's conversion, and saying so is the honest label the owner asked for
 /// when the API turned out not to expose osu!'s own converted value (§8).
 ///
-/// Two commits, because the port genuinely draws on two and naming only one would be false. The
-/// **conversion** is the pinned commit's — verified line by line against it, and `case 3` is the one
-/// place it differs from today's, flagged in §8. The **mod multiplier table** cannot be the pinned
-/// commit's: at `28c846b4` the migration multiplied each mod's `Mod.ScoreMultiplier` property, and
-/// measuring 324 lazer-era replays that record both the pre-mod and final score shows every one of
-/// them used the later `ScoreMultiplierCalculator` values instead (§8).
-const SCOREVER: &str = "our port of lazer @ 28c846b4 (conversion) + V2 mod multipliers @ 577d29f21d816754dba28f95ef3290ffe6da1f99";
+/// Four commits, because the port genuinely draws on four and naming one would be false.
+///
+/// - **The conversion** is the pinned commit's `28c846b4` — verified line by line against it. osu!,
+///   catch and mania's reference frames and the peppy-star helper are still **byte-identical** between
+///   that commit and today, so for three of the four modes the pin is exactly right.
+/// - **The mod multiplier table** cannot be the pinned commit's: at `28c846b4` the migration
+///   multiplied each mod's own `Mod.ScoreMultiplier` property, and measuring 324 lazer-era replays
+///   that record both a pre-mod and a final score shows every one of them used the later
+///   `ScoreMultiplierCalculator` tables instead (`c83737be`, #37967).
+/// - **taiko** (`284886af`, #38203) and **mania** (`0f3d3c3b`, #38321) each got a conversion fix after
+///   the pin, and the port takes both — not because they are newer, but because each makes the
+///   conversion reproduce *stable* more exactly, which is the only thing a converted stable-era play
+///   is trying to be. taiko's drum-roll ticks became stable's own loop rather than the modern client's
+///   nested-object generator (plus `CircleSize = 2` before the peppy stars are derived), and mania's
+///   two coefficients were simply back to front.
+///
+/// Both fixes ship with a *"reprocessing of all legacy scores"* warning, and upstream had not done
+/// that reprocessing as of #38321 (2026-07-27) — so osu!'s stored converted value for an old taiko or
+/// mania play may still be the pre-fix one. The port takes the **fixed** behaviour anyway, because the
+/// question a library answers is what the play was worth, and the fix is the better answer to that.
+const SCOREVER: &str = "our port of lazer @ 28c846b4 (conversion) + c83737be (#37967, V2 multipliers) + 284886af (#38203, taiko) + 0f3d3c3b (#38321, mania)";
 
 /// The index format's own version. Bumped when a file's **shape** changes, never when its contents
 /// do — a rebalance changes every number in the file and no reader needs telling.
