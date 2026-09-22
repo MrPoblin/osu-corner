@@ -1,11 +1,15 @@
 #![forbid(unsafe_code)]
 
-//! The osu! domain: `.osr` and `.osu` parsing, the library index format, and pp.
+//! The osu! domain: `.osr` and `.osu` parsing, the library index format, and grades.
+//!
+//! (`pp` is not here — it needs `rosu-pp`, which stays in `osu-ingest` so this crate keeps
+//! compiling for wasm32 as the Worker's domain crate.)
 //!
 //! Pure data — no filesystem, no threads, no `worker`. That is what keeps it usable from the
 //! Worker and testable under plain `cargo test`, and it is why the file walking lives in
 //! `osu-ingest` instead of here.
 
+pub mod grade;
 pub mod osr;
 pub mod osu;
 

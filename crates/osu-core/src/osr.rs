@@ -109,6 +109,13 @@ pub struct Header {
     /// Present only when the file carries one. `-1`, which both clients write for "never
     /// submitted", is an absence and becomes `None`.
     pub online_score_id: Option<i64>,
+    /// lazer's own letter for this play, out of the appended blob. **The only place a failed score
+    /// can be told apart from a passed one** — no field anywhere in the file says so, so a letter
+    /// derived from accuracy alone would present a failed replay as though it had passed (§16).
+    /// Measured: present in 305 of this library's 355 lazer-era replays, two of them `"F"`, and
+    /// `None` for every stable-era replay, which records no rank at all. This is lazer's finished
+    /// answer rather than an input, so nothing here should second-guess it — see [`crate::grade`].
+    pub stored_rank: Option<String>,
 }
 
 impl Header {
@@ -168,7 +175,7 @@ pub fn parse(buf: &[u8]) -> Result<Header, Error> {
     let timestamp = take_i64(buf, &mut at)?;
 
     let data_length = take_i32(buf, &mut at)?;
-    let (online_score_id, mods_names, mods_json) = read_tail(buf, data_length, at);
+    let (online_score_id, mods_names, mods_json, stored_rank) = read_tail(buf, data_length, at);
 
     Ok(Header {
         mode,
@@ -185,6 +192,7 @@ pub fn parse(buf: &[u8]) -> Result<Header, Error> {
         mods_names,
         mods_json,
         online_score_id,
+        stored_rank,
     })
 }
 
@@ -204,9 +212,9 @@ fn read_tail(
     buf: &[u8],
     data_length: i32,
     after_header: usize,
-) -> (Option<i64>, Vec<String>, Option<String>) {
+) -> (Option<i64>, Vec<String>, Option<String>, Option<String>) {
     if data_length < 0 {
-        return (None, Vec::new(), None);
+        return (None, Vec::new(), None, None);
     }
     let body_end = after_header.saturating_add(data_length as usize);
     let legacy = id_at(buf, body_end);
@@ -214,19 +222,19 @@ fn read_tail(
     // The appended blob, if there is one, and only if its declared length really is there: a
     // truncated or hostile length must not become a huge allocation.
     let Some(blob_len) = length_at(buf, body_end + 8) else {
-        return (legacy, Vec::new(), None);
+        return (legacy, Vec::new(), None, None);
     };
     let end = body_end
         .saturating_add(12)
         .saturating_add(blob_len as usize);
     let Some(blob) = buf.get(body_end + 12..end) else {
-        return (legacy, Vec::new(), None);
+        return (legacy, Vec::new(), None, None);
     };
 
     match decode_appended(blob) {
         // The blob is authoritative when it decodes, even where it says "no online id": it is the
         // newer and only-kept-in-sync copy, and the legacy field is `-1` in every such file.
-        Some((id, mods)) => {
+        Some((id, mods, stored_rank)) => {
             let names = mods
                 .iter()
                 .filter_map(|entry| entry.get("acronym")?.as_str().map(str::to_owned))
@@ -234,9 +242,9 @@ fn read_tail(
             // Re-serialised unchanged, so nothing the parser does not understand is lost on the
             // way to `rosu-mods`. If it will not serialise it was not JSON to begin with.
             let json = serde_json::to_string(&mods).ok();
-            (id.or(legacy), names, json)
+            (id.or(legacy), names, json, stored_rank)
         }
-        None => (legacy, Vec::new(), None),
+        None => (legacy, Vec::new(), None, None),
     }
 }
 
@@ -245,6 +253,9 @@ fn read_tail(
 #[derive(serde::Deserialize)]
 struct Appended {
     online_id: Option<i64>,
+    /// lazer's own letter for the play. It has no legacy counterpart, and it is the only failure
+    /// flag that exists anywhere in either client's file.
+    rank: Option<String>,
     /// The mod objects **as raw JSON**, not typed fields. `rosu-mods` deserializes this exact shape
     /// — its own tests feed it `{"acronym": "DA", "settings": {…}}` alongside bare
     /// `{"acronym": "CS"}` — so keeping it verbatim preserves settings this crate has no business
@@ -254,12 +265,16 @@ struct Appended {
     mods: Vec<serde_json::Value>,
 }
 
-fn decode_appended(blob: &[u8]) -> Option<(Option<i64>, Vec<serde_json::Value>)> {
+fn decode_appended(blob: &[u8]) -> Option<(Option<i64>, Vec<serde_json::Value>, Option<String>)> {
     let mut raw = Vec::new();
     lzma_rs::lzma_decompress(&mut &blob[..], &mut raw).ok()?;
 
     let appended: Appended = serde_json::from_slice(&raw).ok()?;
-    Some((appended.online_id.filter(|id| *id > 0), appended.mods))
+    Some((
+        appended.online_id.filter(|id| *id > 0),
+        appended.mods,
+        appended.rank,
+    ))
 }
 
 /// A score id at an offset, `None` where the file is too short, and never a non-positive value —
@@ -337,6 +352,19 @@ fn read_string(buf: &[u8], at: &mut usize) -> Result<String, Error> {
 
 #[cfg(test)]
 mod tests {
+    /// lazer's own letter is the only place a failed score can be recognised, so it has to survive
+    /// the parse. `F` is the case that matters: accuracy alone would call that play something it
+    /// is not. A stable-era file has no blob and so no letter at all.
+    #[test]
+    fn the_appended_blob_carries_lazers_own_letter() {
+        let json = r#"{"online_id":7,"rank":"F","mods":[]}"#;
+        let header =
+            parse(&build_lazer([10, 0, 0, 0, 0, 3], false, -1, Some(json))).expect("parses");
+        assert_eq!(header.stored_rank.as_deref(), Some("F"));
+
+        let plain = parse(&build_lazer([10, 0, 0, 0, 0, 0], true, 456, None)).expect("parses");
+        assert_eq!(plain.stored_rank, None);
+    }
     use super::*;
 
     /// Build a real-shaped `.osr` by hand, so the tests do not depend on a fixture file.
