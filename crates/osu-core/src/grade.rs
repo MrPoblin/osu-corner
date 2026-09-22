@@ -53,7 +53,7 @@
 use serde::{Deserialize, Serialize};
 
 /// What a play's letter is. Serializes as `"S"`, `"SH"`, `"X"`, … — the index stores the letter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Rank {
     XH,
     X,
@@ -245,6 +245,29 @@ fn any_imperfect(counts: &[u16; 6]) -> bool {
     counts[1] as u32 + counts[2] as u32 + counts[4] as u32 + counts[5] as u32 > 0
 }
 
+impl Rank {
+    /// Parse a letter as osu! writes it — `"SH"`, `"X"`, `"F"`.
+    ///
+    /// A separate function rather than serde, because the thing being parsed is the *inside* of a
+    /// JSON string field rather than a JSON value, and because an unfamiliar letter should be an
+    /// absence rather than a failure: lazer keeps adding mods, and one day it may keep adding
+    /// letters. Used on lazer's own stored rank, which is authoritative where it exists (§16).
+    pub fn from_acronym(letter: &str) -> Option<Self> {
+        Some(match letter {
+            "XH" => Rank::XH,
+            "X" => Rank::X,
+            "SH" => Rank::SH,
+            "S" => Rank::S,
+            "A" => Rank::A,
+            "B" => Rank::B,
+            "C" => Rank::C,
+            "D" => Rank::D,
+            "F" => Rank::F,
+            _ => return None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +297,15 @@ mod tests {
         assert!((0.94..0.95).contains(&accuracy), "{accuracy}");
         assert_eq!(grade(false, MODE_OSU, accuracy, &counts, false), Rank::S);
         assert_eq!(grade(LAZER, MODE_OSU, accuracy, &counts, false), Rank::A);
+    }
+
+    #[test]
+    fn a_letter_read_out_of_a_blob_parses_and_an_unknown_one_is_an_absence() {
+        assert_eq!(Rank::from_acronym("SH"), Some(Rank::SH));
+        assert_eq!(Rank::from_acronym("F"), Some(Rank::F));
+        assert_eq!(Rank::from_acronym("X"), Some(Rank::X));
+        assert_eq!(Rank::from_acronym("SHH"), None);
+        assert_eq!(Rank::from_acronym(""), None);
     }
 
     #[test]

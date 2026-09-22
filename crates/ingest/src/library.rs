@@ -19,9 +19,9 @@
 use crate::collect::{self, Known};
 use crate::ledger::{Blob, Kind, Ledger};
 use crate::mirror::{Fetched, Fetcher};
-use crate::pp;
 use crate::{Source, SourceKind};
-use osu_core::osr;
+use crate::{index, pp};
+use osu_core::{osr, osu};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
@@ -31,6 +31,23 @@ use std::time::Instant;
 /// The ledger `source` under which a beatmap osu! was asked about and did not know is recorded.
 /// It is a source like any other, so a run that wants to ask again deletes the ledger.
 const ASKED_SOURCE: &str = "osu-api";
+
+/// A staged replay, before pricing: the `.osr`'s own fields, plus the three things the index needs
+/// that pricing does not — which score this is, when it was set, and the `.osr`'s recorded total.
+///
+/// The identity is carried alongside the pricing inputs rather than recovered later, because the
+/// filename is the only place the played time exists and the ledger's rows do not survive to here.
+struct Staged {
+    /// `(beatmap MD5, score timestamp)` — the play key, and the R2 object key when osu! never gave
+    /// this play an id.
+    key: String,
+    /// The `.osr`'s recorded total. Which of the index's two score columns it belongs in is decided
+    /// by the era, not here.
+    recorded: i64,
+    online_id: Option<i64>,
+    played_at: i64,
+    play: pp::Play,
+}
 
 pub fn build(
     sources: &[&Source],
@@ -245,7 +262,12 @@ pub fn build(
     // Plays are grouped by map first so a map is decoded once instead of once per play — a map
     // averages 2.65 plays here (§16) and decoding is the expensive half.
     let pricing = Instant::now();
-    let mut by_map: HashMap<String, Vec<pp::Play>> = HashMap::new();
+    let mut by_map: HashMap<String, Vec<Staged>> = HashMap::new();
+    // What the index is written from: the priced plays and one description per map they reference.
+    // Collected here because pricing already has each map's bytes in hand — reading them a second
+    // time to describe them would be paying twice for the same file.
+    let mut indexed: Vec<index::Play> = Vec::new();
+    let mut beatmaps: HashMap<String, index::Beatmap> = HashMap::new();
     let mut unpriced = 0u64;
 
     // Driven by the **staged filenames**, which are the deduplicated set: the ledger holds a row
@@ -268,15 +290,29 @@ pub fn build(
             continue;
         };
         match osr::parse(&bytes) {
-            Ok(header) => by_map.entry(md5.to_owned()).or_default().push(pp::Play {
-                mods: header.mods,
-                counts: header.counts,
-                max_combo: header.max_combo,
-                mode: header.mode,
-                mods_names: header.mods_names.clone(),
-                mods_json: header.mods_json.clone(),
-                version: header.version,
-            }),
+            Ok(header) => {
+                let Some(played_at) = played_at(key) else {
+                    unpriced += 1;
+                    continue;
+                };
+                by_map.entry(md5.to_owned()).or_default().push(Staged {
+                    key: key.to_owned(),
+                    recorded: i64::from(header.score),
+                    online_id: header.online_score_id,
+                    played_at,
+                    play: pp::Play {
+                        mods: header.mods,
+                        counts: header.counts,
+                        max_combo: header.max_combo,
+                        mode: header.mode,
+                        mods_names: header.mods_names.clone(),
+                        mods_json: header.mods_json.clone(),
+                        version: header.version,
+                        sliders: header.sliders,
+                        stored_rank: header.stored_rank,
+                    },
+                });
+            }
             Err(_) => unpriced += 1,
         }
     }
@@ -285,6 +321,12 @@ pub fn build(
     let mut priced = 0u64;
     let mut stars: Vec<f64> = Vec::new();
     let mut pps: Vec<f64> = Vec::new();
+    // The verdicts, which the index will store per play (§5): one accuracy and two letters, the
+    // era's and lazer's. Collected and reported so a change in the rules shows up as a different
+    // distribution rather than as silence.
+    let mut accuracies: Vec<f64> = Vec::new();
+    let mut letters: std::collections::BTreeMap<osu_core::grade::Rank, u32> =
+        std::collections::BTreeMap::new();
 
     for (md5, plays) in &by_map {
         let Ok(bytes) = fs::read(work.join("maps").join(format!("{md5}.osu"))) else {
@@ -295,12 +337,35 @@ pub fn build(
             unpriced += plays.len() as u64;
             continue;
         };
-        for play in plays {
-            match map.attributes(play) {
+        // The index describes the map as well as pricing its plays: the difficulty name, the artist
+        // and title, and the two online ids a cover URL and an osu! link are built from. Parsed here
+        // rather than in the writer so the file is read once.
+        if let (Ok(meta), Ok(no_mod_stars)) = (osu::parse(&bytes), map.stars()) {
+            beatmaps.insert(
+                md5.clone(),
+                index::Beatmap {
+                    meta,
+                    stars: no_mod_stars,
+                },
+            );
+        }
+        for staged in plays {
+            match map.attributes(&staged.play) {
                 Ok(attributes) => {
                     priced += 1;
                     stars.push(attributes.stars);
                     pps.push(attributes.pp);
+                    accuracies.push(attributes.accuracy);
+                    *letters.entry(attributes.lazer_rank).or_default() += 1;
+                    indexed.push(index::Play {
+                        play: staged.play.clone(),
+                        attributes,
+                        md5: md5.clone(),
+                        recorded: staged.recorded,
+                        online_id: staged.online_id,
+                        key: staged.key.clone(),
+                        played_at: staged.played_at,
+                    });
                 }
                 // Refused as too suspicious, or not calculable. Counted rather than hidden.
                 Err(_) => unpriced += 1,
@@ -317,7 +382,33 @@ pub fn build(
     };
     let (star_low, star_high) = span(&mut stars);
     let (pp_low, pp_high) = span(&mut pps);
+    let (accuracy_low, accuracy_high) = span(&mut accuracies);
     let pricing_seconds = pricing.elapsed().as_secs_f64();
+
+    println!(
+        "  verdicts {:>6} accuracy {:.4}-{:.4}, lazer letters {:?}",
+        accuracies.len(),
+        accuracy_low,
+        accuracy_high,
+        letters
+    );
+
+    // ---------------------------------------------------------------- the index
+    //
+    // Written from what pricing produced, so it can only contain plays that were actually priced.
+    // A dry run still builds each file and reports its size — it simply does not write it, which is
+    // the promise the run's opening line makes.
+    let report = index::write(&indexed, &beatmaps, work, dry_run)?;
+    for (name, bytes, plays, maps) in &report.files {
+        println!(
+            "  {name:<17}{plays:>6} plays  {maps:>5} beatmaps  {:>6.0} KB",
+            *bytes as f64 / 1024.0
+        );
+    }
+    println!(
+        "  {:<17}{:>6} plays carry a score, {:>6} wait for step 5a (the recalculation)",
+        "score", report.scored, report.awaiting_score
+    );
 
     // ----------------------------------------------------------------- report
 
@@ -572,9 +663,37 @@ fn kind_name(kind: SourceKind) -> &'static str {
     }
 }
 
+/// Unix seconds from a staged replay's filename.
+///
+/// The name is `<md5>-<ticks>`. The ticks are .NET's from year 1, and staging already subtracted
+/// `504911232000000000`, so what is left reads as FILETIME ticks from 1601: one subtraction of
+/// `116444736000000000`, then a division by ten million. **Round, and do not think about it
+/// further** — §5's verified example is `133493808368081330` becoming `1704907237`, which is the
+/// rounded value of `1704907236.808…`, and whether that last second is rounded or dropped changes
+/// nothing any filter, sort or grouping here is sensitive to. The play key keeps full precision
+/// regardless.
+fn played_at(key: &str) -> Option<i64> {
+    let ticks: i64 = key.rsplit_once('-')?.1.parse().ok()?;
+    let seconds = (ticks - 116_444_736_000_000_000) as f64 / 10_000_000.0;
+    Some(seconds.round() as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §5's verified pair, which is the only reason this conversion is trusted: a real staged
+    /// filename becomes the real Unix second osu! reports for that play.
+    #[test]
+    fn a_play_key_becomes_a_unix_timestamp() {
+        assert_eq!(
+            played_at("54e082c3fc2a2b7bd4bb862ffaaef037-133493808368081330"),
+            Some(1_704_907_237)
+        );
+        // A name with no timestamp is not a play key, and must not silently become the epoch.
+        assert_eq!(played_at("54e082c3fc2a2b7bd4bb862ffaaef037"), None);
+        assert_eq!(played_at("54e082c3fc2a2b7bd4bb862ffaaef037-notatick"), None);
+    }
 
     #[test]
     fn only_generated_names_are_writable() {

@@ -70,6 +70,29 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// The slider counts **and their maxima**, out of lazer's named `statistics` / `maximum_statistics`.
+///
+/// Lazer calls them `large_tick_hit`, `small_tick_hit` and `slider_tail_hit`; `rosu-pp` calls the
+/// same numbers `large_tick_hits`, `small_tick_hits` and `slider_end_hits`, and those names are used
+/// here so the wiring between the two is obvious. **Lazer's accuracy counts these where stable's
+/// does not**, which is the whole reason the two clients disagree about 28% of stable-era plays
+/// (§16); they are also what `rosu-pp` wants as tick inputs when pricing a play.
+///
+/// **The maxima come from here rather than from the map**, because that is what lazer's own
+/// `StandardisedScoreMigrationTools.ComputeAccuracy` divides by — `rosu-pp` infers map-derived
+/// maxima only because a caller holding hit counts alone has nothing else. Measured: both objects
+/// were present in every one of this library's 355 lazer-era blobs. Only osu!standard has them —
+/// the object's names differ per ruleset — so nothing else is modelled.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SliderCounts {
+    pub large_tick_hits: u32,
+    pub small_tick_hits: u32,
+    pub slider_end_hits: u32,
+    pub max_large_ticks: u32,
+    pub max_small_ticks: u32,
+    pub max_slider_ends: u32,
+}
+
 /// The parts of a replay this project needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
@@ -116,6 +139,11 @@ pub struct Header {
     /// `None` for every stable-era replay, which records no rank at all. This is lazer's finished
     /// answer rather than an input, so nothing here should second-guess it — see [`crate::grade`].
     pub stored_rank: Option<String>,
+    /// **The slider counts and their maxima, which only a lazer-era file has.** They are what makes
+    /// lazer's accuracy differ from stable's, and what `rosu-pp` wants as tick inputs when pricing a
+    /// play. `None` for every stable-era replay, whose legacy counts carry no slider information at
+    /// all — measured, every lazer-era blob carried both named objects.
+    pub sliders: Option<SliderCounts>,
 }
 
 impl Header {
@@ -175,7 +203,7 @@ pub fn parse(buf: &[u8]) -> Result<Header, Error> {
     let timestamp = take_i64(buf, &mut at)?;
 
     let data_length = take_i32(buf, &mut at)?;
-    let (online_score_id, mods_names, mods_json, stored_rank) = read_tail(buf, data_length, at);
+    let tail = read_tail(buf, data_length, at);
 
     Ok(Header {
         mode,
@@ -189,10 +217,11 @@ pub fn parse(buf: &[u8]) -> Result<Header, Error> {
         perfect,
         mods,
         timestamp,
-        mods_names,
-        mods_json,
-        online_score_id,
-        stored_rank,
+        mods_names: tail.mods_names,
+        mods_json: tail.mods_json,
+        online_score_id: tail.online_score_id,
+        stored_rank: tail.stored_rank,
+        sliders: tail.sliders,
     })
 }
 
@@ -208,13 +237,32 @@ pub fn parse(buf: &[u8]) -> Result<Header, Error> {
 /// Everything here is best-effort. A file whose blob is truncated, not LZMA, or not JSON falls
 /// back to the legacy field rather than failing — losing the extra fields of one replay is not a
 /// reason to lose the replay.
-fn read_tail(
-    buf: &[u8],
-    data_length: i32,
-    after_header: usize,
-) -> (Option<i64>, Vec<String>, Option<String>, Option<String>) {
+/// Everything that follows the compressed replay data. Named fields rather than a tuple because it
+/// has grown once per thing worth keeping.
+struct Tail {
+    online_score_id: Option<i64>,
+    mods_names: Vec<String>,
+    mods_json: Option<String>,
+    stored_rank: Option<String>,
+    sliders: Option<SliderCounts>,
+}
+
+impl Tail {
+    /// Nothing found: no id, no mods, no letter, no slider counts.
+    fn empty() -> Self {
+        Self {
+            online_score_id: None,
+            mods_names: Vec::new(),
+            mods_json: None,
+            stored_rank: None,
+            sliders: None,
+        }
+    }
+}
+
+fn read_tail(buf: &[u8], data_length: i32, after_header: usize) -> Tail {
     if data_length < 0 {
-        return (None, Vec::new(), None, None);
+        return Tail::empty();
     }
     let body_end = after_header.saturating_add(data_length as usize);
     let legacy = id_at(buf, body_end);
@@ -222,19 +270,25 @@ fn read_tail(
     // The appended blob, if there is one, and only if its declared length really is there: a
     // truncated or hostile length must not become a huge allocation.
     let Some(blob_len) = length_at(buf, body_end + 8) else {
-        return (legacy, Vec::new(), None, None);
+        return Tail {
+            online_score_id: legacy,
+            ..Tail::empty()
+        };
     };
     let end = body_end
         .saturating_add(12)
         .saturating_add(blob_len as usize);
     let Some(blob) = buf.get(body_end + 12..end) else {
-        return (legacy, Vec::new(), None, None);
+        return Tail {
+            online_score_id: legacy,
+            ..Tail::empty()
+        };
     };
 
     match decode_appended(blob) {
         // The blob is authoritative when it decodes, even where it says "no online id": it is the
         // newer and only-kept-in-sync copy, and the legacy field is `-1` in every such file.
-        Some((id, mods, stored_rank)) => {
+        Some((id, mods, stored_rank, sliders)) => {
             let names = mods
                 .iter()
                 .filter_map(|entry| entry.get("acronym")?.as_str().map(str::to_owned))
@@ -242,9 +296,18 @@ fn read_tail(
             // Re-serialised unchanged, so nothing the parser does not understand is lost on the
             // way to `rosu-mods`. If it will not serialise it was not JSON to begin with.
             let json = serde_json::to_string(&mods).ok();
-            (id.or(legacy), names, json, stored_rank)
+            Tail {
+                online_score_id: id.or(legacy),
+                mods_names: names,
+                mods_json: json,
+                stored_rank,
+                sliders,
+            }
         }
-        None => (legacy, Vec::new(), None, None),
+        None => Tail {
+            online_score_id: legacy,
+            ..Tail::empty()
+        },
     }
 }
 
@@ -256,6 +319,11 @@ struct Appended {
     /// lazer's own letter for the play. It has no legacy counterpart, and it is the only failure
     /// flag that exists anywhere in either client's file.
     rank: Option<String>,
+    /// The named `statistics` lazer writes, and the `maximum_statistics` its accuracy divides by.
+    /// Measured present in every one of this library's 355 lazer-era blobs. Only the slider counts
+    /// are modelled — see [`SliderCounts`].
+    statistics: Option<NamedStatistics>,
+    maximum_statistics: Option<NamedStatistics>,
     /// The mod objects **as raw JSON**, not typed fields. `rosu-mods` deserializes this exact shape
     /// — its own tests feed it `{"acronym": "DA", "settings": {…}}` alongside bare
     /// `{"acronym": "CS"}` — so keeping it verbatim preserves settings this crate has no business
@@ -265,15 +333,53 @@ struct Appended {
     mods: Vec<serde_json::Value>,
 }
 
-fn decode_appended(blob: &[u8]) -> Option<(Option<i64>, Vec<serde_json::Value>, Option<String>)> {
+/// The names lazer uses inside `statistics` and `maximum_statistics`, which differ per ruleset —
+/// only osu!standard's are read. Missing names default to zero so a ruleset that does not have them
+/// is not an error.
+#[derive(serde::Deserialize, Clone, Copy, Default)]
+struct NamedStatistics {
+    #[serde(default)]
+    large_tick_hit: u32,
+    #[serde(default)]
+    small_tick_hit: u32,
+    #[serde(default)]
+    slider_tail_hit: u32,
+}
+
+/// What a decodable appended blob yields: the online id, the mods array verbatim, lazer's own
+/// letter, and the slider counts. A tuple behind an alias because clippy flags the four-parameter
+/// form written inline as too complex to read.
+type Decoded = (
+    Option<i64>,
+    Vec<serde_json::Value>,
+    Option<String>,
+    Option<SliderCounts>,
+);
+
+fn decode_appended(blob: &[u8]) -> Option<Decoded> {
     let mut raw = Vec::new();
     lzma_rs::lzma_decompress(&mut &blob[..], &mut raw).ok()?;
 
     let appended: Appended = serde_json::from_slice(&raw).ok()?;
+    // Unusable without their maxima, so the maxima fall back to zero rather than being required: a
+    // ruleset with no slider statistics at all still gets a `Some` of zeroes, which `rosu-pp`
+    // ignores outside osu!standard anyway.
+    let sliders = appended.statistics.map(|s| {
+        let m = appended.maximum_statistics.unwrap_or_default();
+        SliderCounts {
+            large_tick_hits: s.large_tick_hit,
+            small_tick_hits: s.small_tick_hit,
+            slider_end_hits: s.slider_tail_hit,
+            max_large_ticks: m.large_tick_hit,
+            max_small_ticks: m.small_tick_hit,
+            max_slider_ends: m.slider_tail_hit,
+        }
+    });
     Some((
         appended.online_id.filter(|id| *id > 0),
         appended.mods,
         appended.rank,
+        sliders,
     ))
 }
 
@@ -352,6 +458,36 @@ fn read_string(buf: &[u8], at: &mut usize) -> Result<String, Error> {
 
 #[cfg(test)]
 mod tests {
+    /// **The slider counts live only in the blob's named statistics**, they are what lazer's accuracy
+    /// counts and stable's does not, and they are what `rosu-pp` wants as tick inputs. Their maxima
+    /// come out of the same blob, because that is what lazer's own accuracy divides by. A stable-era
+    /// file has no blob, so it has none of this — no loss, because stable's accuracy never used it.
+    #[test]
+    fn the_appended_blob_carries_the_slider_counts_and_their_maxima() {
+        let json = r#"{"statistics":{"great":100,"large_tick_hit":30,"small_tick_hit":4,"slider_tail_hit":80},
+                       "maximum_statistics":{"great":120,"large_tick_hit":32,"small_tick_hit":5,"slider_tail_hit":90}}"#;
+        let header =
+            parse(&build_lazer([100, 0, 0, 0, 0, 0], true, -1, Some(json))).expect("parses");
+        let s = header.sliders.expect("sliders");
+        assert_eq!(
+            (s.large_tick_hits, s.small_tick_hits, s.slider_end_hits),
+            (30, 4, 80)
+        );
+        assert_eq!(
+            (s.max_large_ticks, s.max_small_ticks, s.max_slider_ends),
+            (32, 5, 90)
+        );
+
+        // a ruleset whose statistics use different names is not an error, just zeroes
+        let taiko = r#"{"statistics":{"great":100,"good":2},"maximum_statistics":{"great":102}}"#;
+        let header =
+            parse(&build_lazer([100, 2, 0, 0, 0, 0], true, -1, Some(taiko))).expect("parses");
+        assert_eq!(header.sliders, Some(SliderCounts::default()));
+
+        let plain = parse(&build_lazer([100, 0, 0, 0, 0, 0], true, 456, None)).expect("parses");
+        assert_eq!(plain.sliders, None);
+    }
+
     /// lazer's own letter is the only place a failed score can be recognised, so it has to survive
     /// the parse. `F` is the case that matters: accuracy alone would call that play something it
     /// is not. A stable-era file has no blob and so no letter at all.

@@ -3,10 +3,11 @@
 //! Local ingest: the library's game folders in, the working set, index and R2 objects out. Never
 //! deployed — it reads game installs and writes only inside `library/`.
 //!
-//! Today it builds the working set: the maps a play references, every replay, and the ledger that
-//! makes a re-sync cheap. Index writing and upload are not implemented yet.
+//! Today it builds the working set — the maps a play references, every replay, and the ledger that
+//! makes a re-sync cheap — and writes the index the site reads. Upload to R2 is not implemented yet.
 
 mod collect;
+mod index;
 mod ledger;
 mod library;
 mod mirror;

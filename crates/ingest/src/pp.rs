@@ -25,8 +25,14 @@
 //! that a stranger's clone will point at their own folders. A crafted `.osu` is attacker-controlled
 //! input, so `checked_calculate` is used at both entry points rather than `calculate`.
 
+use osu_core::grade::{Rank, grade, lazer_grade};
+use osu_core::osr::SliderCounts;
 use rosu_mods::serde::GameModsSeed;
+use rosu_pp::catch::CatchHitResults;
+use rosu_pp::mania::ManiaHitResults;
 use rosu_pp::model::mods::rosu_mods::{GameMode, GameModsIntermode};
+use rosu_pp::osu::{OsuHitResults, OsuScoreOrigin};
+use rosu_pp::taiko::TaikoHitResults;
 use rosu_pp::{Beatmap, Difficulty, GameMods, Performance};
 use serde::de::DeserializeSeed;
 
@@ -53,11 +59,22 @@ pub const ROSU_PP: &str = "rosu-pp 4.0.1 @ lazer 28c846b4d9366484792e27f4729cd1a
 /// and lazer score semantics. Measured: 355 of this library's 8,000 replays are at or above it.
 const LAZER_ENCODER: i32 = 30_000_001;
 
-/// What a play on a beatmap came out as.
+/// What a play on a beatmap came out as: the map's difficulty, and the score's own verdicts.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Attributes {
     pub stars: f64,
     pub pp: f64,
+    /// `rosu-pp`'s accuracy, which is lazer's or stable's arithmetic depending on the era — see
+    /// [`accuracy_of`]. Never a formula written here: measured on 302 real lazer-era osu! replays, a
+    /// hand-written classic accuracy reproduced only 237 of lazer's own stored letters.
+    pub accuracy: f64,
+    /// The letter that fits the play's era — stable's rules for a stable-era replay, lazer's for a
+    /// lazer-era one. What osu! shows for it (§5).
+    pub rank: Rank,
+    /// lazer's letter for the same play. Identical to `rank` on a lazer-era play and different on 28%
+    /// of stable-era ones, because osu!'s site can show either depending on whether the score was
+    /// migrated (§5, §16).
+    pub lazer_rank: Rank,
 }
 
 #[derive(Debug)]
@@ -102,6 +119,105 @@ pub struct Play {
     pub max_combo: u16,
     /// The `.osr`'s format version, which decides stable or lazer semantics.
     pub version: i32,
+    /// The slider counts and their maxima, from the blob's named statistics. **Only a lazer-era file
+    /// has them**, and they are what lazer's accuracy counts and stable's does not — the difference
+    /// behind 28% of stable-era plays having two possible letters (§16).
+    pub sliders: Option<SliderCounts>,
+    /// **lazer's own letter, where the file recorded one.** Authoritative when present: it is the
+    /// only field that can say a score failed, and it is lazer's finished answer rather than an
+    /// input. 305 of this library's 355 lazer-era replays have one (§16).
+    pub stored_rank: Option<String>,
+}
+
+impl Play {
+    /// Whether this replay was written by lazer.
+    ///
+    /// The era decides more than it looks: which score column holds the recorded value, whether `CL`
+    /// is explicit in the blob or has to be inferred from the era, and which of the two accuracy
+    /// origins applies. It is derived from the version and nothing else, which is the one signal both
+    /// clients agree on.
+    pub fn lazer(&self) -> bool {
+        self.version >= LAZER_ENCODER
+    }
+}
+
+/// The accuracy `rosu-pp` computes for a play — **never a formula written here.**
+///
+/// Every mode's `HitResults::accuracy` is a port of lazer's own `ScoreProcessor` arithmetic, and
+/// lazer's is not stable's. Measured on 302 real lazer-era osu! replays, deriving a letter from a
+/// hand-written classic accuracy reproduced **237** of lazer's own stored letters, while stable's own
+/// 300-proportion rule reproduced 151 — and 63 of the 65 failures were lazer being *more* generous,
+/// which is exactly what the slider terms are. See [`osu_core::grade`]'s module docs.
+fn accuracy_of(play: &Play, lazer: bool, classic: bool) -> f64 {
+    match play.mode {
+        // osu!standard is the only mode whose accuracy depends on the slider counts, and the only
+        // one with three possible origins.
+        0 => {
+            let s = play.sliders.unwrap_or_default();
+            OsuHitResults {
+                large_tick_hits: s.large_tick_hits,
+                small_tick_hits: s.small_tick_hits,
+                slider_end_hits: s.slider_end_hits,
+                n300: u32::from(play.counts[0]),
+                n100: u32::from(play.counts[1]),
+                n50: u32::from(play.counts[2]),
+                misses: u32::from(play.counts[5]),
+            }
+            .accuracy(osu_origin(lazer, classic, &s))
+        }
+        1 => TaikoHitResults {
+            n300: u32::from(play.counts[0]),
+            n100: u32::from(play.counts[1]),
+            misses: u32::from(play.counts[5]),
+        }
+        .accuracy(),
+        2 => CatchHitResults {
+            fruits: u32::from(play.counts[0]),
+            droplets: u32::from(play.counts[1]),
+            tiny_droplets: u32::from(play.counts[2]),
+            tiny_droplet_misses: u32::from(play.counts[4]),
+            misses: u32::from(play.counts[5]),
+        }
+        .accuracy(),
+        // osu!mania is the mode where the 4th and 5th counts are judgements: `geki` is the rainbow
+        // MAX and `katu` is the 200. That is the same mapping `grade.rs` relies on for mania's
+        // "anything imperfect" test.
+        _ => ManiaHitResults {
+            n320: u32::from(play.counts[3]),
+            n300: u32::from(play.counts[0]),
+            n200: u32::from(play.counts[4]),
+            n100: u32::from(play.counts[1]),
+            n50: u32::from(play.counts[2]),
+            misses: u32::from(play.counts[5]),
+        }
+        .accuracy(classic),
+    }
+}
+
+/// `rosu-pp`'s own origin selection, mirrored from `osu/performance/mod.rs`, where it is
+/// `pub(crate)` and so cannot be called.
+///
+/// The maxima are the ones **the score recorded** rather than the map's, because that is what
+/// lazer's own `ComputeAccuracy` divides by — `rosu-pp` reconstructs map-derived maxima only because
+/// a caller holding hit counts alone has nothing else.
+///
+/// `ponytail:` upstream's `no_slider_head_acc` reads an explicit `no_slider_head_accuracy` setting
+/// off a `CL` mod and falls back to `true`; this uses the `classic` flag, which agrees with that in
+/// every case except a `CL` play carrying `no_slider_head_accuracy: false`. Nothing here can exercise
+/// that — none of this library's 355 lazer-era replays names `CL` — so the upgrade path is to read
+/// the setting out of the blob's mods JSON when a library actually contains one.
+fn osu_origin(lazer: bool, classic: bool, s: &SliderCounts) -> OsuScoreOrigin {
+    match (lazer, classic) {
+        (false, _) => OsuScoreOrigin::Stable,
+        (true, true) => OsuScoreOrigin::WithoutSliderAcc {
+            max_large_ticks: s.max_large_ticks,
+            max_small_ticks: s.max_small_ticks,
+        },
+        (true, false) => OsuScoreOrigin::WithSliderAcc {
+            max_large_ticks: s.max_large_ticks,
+            max_slider_ends: s.max_slider_ends,
+        },
+    }
 }
 
 /// The ruleset byte of an `.osr` as rosu-mods' enum, so mode-specific acronyms resolve (`4K` is a
@@ -138,6 +254,18 @@ impl Map {
         }
 
         Ok(Self { inner })
+    }
+
+    /// The map's own star rating, with no mods.
+    ///
+    /// This is the number osu! reports as `difficulty_rating`, and the only star rating the index can
+    /// store once per map (§5) — a play's own stars depend on its mods, so they would be a column per
+    /// play saying what the map and the mods already imply.
+    pub fn stars(&self) -> Result<f64, Error> {
+        Difficulty::new()
+            .checked_calculate(&self.inner)
+            .map(|attributes| attributes.stars())
+            .map_err(|error| Error::Suspicious(format!("{error:?}")))
     }
 
     /// Stars and pp for one play. The star rating does not depend on the score, only on the map and
@@ -214,8 +342,11 @@ impl Map {
         // the rules behind the score are stable's. The mod list is the only place that says so.
         // This library has no such play — none of its 355 lazer-era replays names `CL` — so nothing
         // here would have caught it; a stranger's clone will.
-        let classic =
-            play.version < LAZER_ENCODER || play.mods_names.iter().any(|name| name == CLASSIC);
+        // `lazer` is the replay's era; `classic` is whose *rules* the score was set under, which for
+        // a lazer-era file is only knowable from the mod list. They are needed separately: the era
+        // picks the accuracy origin, while `classic` picks rosu-pp's score semantics.
+        let lazer = play.lazer();
+        let classic = !lazer || play.mods_names.iter().any(|name| name == CLASSIC);
 
         let difficulty = Difficulty::new()
             .mods(mods.clone())
@@ -223,6 +354,13 @@ impl Map {
             .map_err(|error| Error::Suspicious(format!("{error:?}")))?;
 
         let stars = difficulty.stars();
+
+        // **The slider counts were not reaching pp until now.** Lazer counts slider hits in
+        // accuracy where stable does not, and `rosu-pp` takes those three numbers as inputs; only
+        // the legacy six judgement counts were being passed, which is wrong for every lazer-era osu!
+        // play that has them (355 replays, 16 of them with mod settings too). `unwrap_or_default`
+        // because a stable-era replay has no blob and its accuracy never used them anyway.
+        let sliders = play.sliders.unwrap_or_default();
 
         let pp = Performance::new(difficulty)
             .mods(mods)
@@ -233,18 +371,179 @@ impl Map {
             .n_geki(n_geki)
             .n_katu(n_katu)
             .misses(u32::from(play.counts[5]))
+            .large_tick_hits(sliders.large_tick_hits)
+            .small_tick_hits(sliders.small_tick_hits)
+            .slider_end_hits(sliders.slider_end_hits)
             .lazer(!classic)
             .checked_calculate()
             .map_err(|error| Error::Suspicious(format!("{error:?}")))?
             .pp();
 
-        Ok(Attributes { stars, pp })
+        // Silver is the same letter drawn differently, and osu!'s API returns `SH`, so it is part of
+        // the stored letter rather than a display concern. Hidden and Flashlight have bitflags;
+        // Fade In only ever arrives as a lazer acronym (§16).
+        let silver = play.mods & (1 << 3) != 0
+            || play.mods & (1 << 10) != 0
+            || play.mods_names.iter().any(|name| name == "FI");
+
+        let accuracy = accuracy_of(play, lazer, classic);
+
+        // **lazer's own letter wins where the file recorded one.** It is the only field that can say
+        // a score failed, and it is lazer's finished answer rather than an input, so nothing here
+        // second-guesses it.
+        let lazer_rank = play
+            .stored_rank
+            .as_deref()
+            .and_then(Rank::from_acronym)
+            .unwrap_or_else(|| lazer_grade(play.mode, accuracy, &play.counts, silver));
+
+        // The era's own rule: a stable-era play was graded by stable when it was set, and osu!'s
+        // site still shows that letter for it unless the score was migrated server-side (§16).
+        let rank = if lazer {
+            lazer_rank
+        } else {
+            grade(false, play.mode, accuracy, &play.counts, silver)
+        };
+
+        Ok(Attributes {
+            stars,
+            pp,
+            accuracy,
+            rank,
+            lazer_rank,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temporary_do_the_slider_counts_change_pp() {
+        let map = Map::parse(&tiny_map()).expect("parses");
+        let mut changed = 0;
+        let mut rows: Vec<String> = Vec::new();
+        for (ticks, hit) in [(1u32, 1u32), (2, 2), (5, 3), (10, 7), (40, 39)] {
+            let mut play = play(0, 30_000_019);
+            play.sliders = Some(SliderCounts {
+                large_tick_hits: hit,
+                small_tick_hits: hit,
+                slider_end_hits: hit,
+                max_large_ticks: ticks,
+                max_small_ticks: ticks,
+                max_slider_ends: ticks,
+            });
+            let with = map.attributes(&play).expect("priced");
+            play.sliders = None;
+            let without = map.attributes(&play).expect("priced");
+            if (with.pp - without.pp).abs() > 1e-9
+                || (with.accuracy - without.accuracy).abs() > 1e-9
+            {
+                changed += 1;
+            }
+            rows.push(format!(
+                "   ticks {hit:>3}/{ticks:<3} pp {:>8.3} -> {:>8.3}   accuracy {:.6} -> {:.6}",
+                without.pp, with.pp, without.accuracy, with.accuracy
+            ));
+        }
+        println!(
+            "
+  slider counts changed the answer in {changed} of 5 shapes"
+        );
+        for row in &rows {
+            println!("{row}");
+        }
+        assert!(
+            changed > 0,
+            "the slider counts never reached the calculation - the fix is cosmetic"
+        );
+    }
+
+    #[test]
+    fn temporary_do_we_reproduce_lazers_own_letters() {
+        use std::fs;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library");
+        let (mut n, mut matched, mut failed_expected, mut no_ticks) = (0u32, 0u32, 0u32, 0u32);
+        let mut rows: Vec<String> = Vec::new();
+
+        for entry in fs::read_dir(root.join("replays")).expect("staged replays") {
+            let name = entry.unwrap().file_name();
+            let Some(key) = name.to_str().and_then(|n| n.strip_suffix(".osr")) else {
+                continue;
+            };
+            let Some((md5, _)) = key.split_once('-') else {
+                continue;
+            };
+            let Ok(bytes) = fs::read(root.join("replays").join(format!("{key}.osr"))) else {
+                continue;
+            };
+            let Ok(header) = osu_core::osr::parse(&bytes) else {
+                continue;
+            };
+            let Some(stored) = header.stored_rank.clone() else {
+                continue;
+            };
+            let Ok(map_bytes) = fs::read(root.join("maps").join(format!("{md5}.osu"))) else {
+                continue;
+            };
+            let Ok(map) = Map::parse(&map_bytes) else {
+                continue;
+            };
+            // stored_rank: None forces the derivation instead of echoing the answer back.
+            let play = Play {
+                mode: header.mode,
+                mods: header.mods,
+                mods_names: header.mods_names.clone(),
+                mods_json: header.mods_json.clone(),
+                counts: header.counts,
+                max_combo: header.max_combo,
+                version: header.version,
+                sliders: header.sliders,
+                stored_rank: None,
+            };
+            let Ok(attrs) = map.attributes(&play) else {
+                continue;
+            };
+            n += 1;
+            if header.sliders.is_none() {
+                no_ticks += 1;
+            }
+            if stored == "F" {
+                // `F` cannot be derived by design - a .osr records no failure anywhere - so a
+                // mismatch here is the feature, not a bug.
+                failed_expected += 1;
+            } else if Rank::from_acronym(&stored) == Some(attrs.lazer_rank) {
+                matched += 1;
+            } else if rows.len() < 25 {
+                rows.push(format!(
+                    "   stored {stored:<3} derived {:?}   acc {:.6}   mode {}   sliders {}",
+                    attrs.lazer_rank,
+                    attrs.accuracy,
+                    header.mode,
+                    header.sliders.is_some()
+                ));
+            }
+        }
+
+        let derivable = n - failed_expected;
+        println!(
+            "
+  lazer-era replays carrying lazer's own letter: {n}"
+        );
+        println!(
+            "  of which derivable (not F):                   {derivable}   ({failed_expected} are F, by design)"
+        );
+        println!(
+            "  derived letter matches lazer's:               {matched}/{derivable}  ({:.1}%)",
+            100.0 * matched as f64 / derivable.max(1) as f64
+        );
+        println!("  replays with no slider counts at all:         {no_ticks}");
+        for row in &rows {
+            println!("{row}");
+        }
+        assert!(n > 0, "no stored letters found - the check proved nothing");
+    }
 
     /// A minimal but valid osu!standard beatmap: one circle, so a calculation has something to do.
     /// Built by hand rather than committed as a fixture, so the tests stay text and readable.
@@ -303,6 +602,8 @@ mod tests {
             counts: [64, 0, 0, 0, 0, 0],
             max_combo: 64,
             version,
+            sliders: None,
+            stored_rank: None,
         }
     }
 
@@ -399,6 +700,8 @@ mod tests {
             counts: [40, 20, 4, 0, 0, 0],
             max_combo: 64,
             version: 30_000_019,
+            sliders: None,
+            stored_rank: None,
         };
         let stable_era = Play {
             version: 20230101,
@@ -457,6 +760,8 @@ mod tests {
             mods_names: Vec::new(),
             mods_json: None,
             version: 0,
+            sliders: None,
+            stored_rank: None,
         };
         let stable = map
             .attributes(&Play {
