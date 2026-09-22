@@ -744,6 +744,7 @@ version = "0.1.0"
 dependencies = [
  "osu-core",
  "rayon",
+ "rosu-mods",
  "rosu-pp",
  "rusqlite",
  "serde",
@@ -884,6 +885,9 @@ name = "rosu-mods"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc58d42f8f2308b4b241de147827af84179d0a318de250495c7c5e47cb701cd9"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "rosu-pp"

@@ -25,8 +25,10 @@
 //! that a stranger's clone will point at their own folders. A crafted `.osu` is attacker-controlled
 //! input, so `checked_calculate` is used at both entry points rather than `calculate`.
 
-use rosu_pp::model::mods::rosu_mods::GameModsIntermode;
+use rosu_mods::serde::GameModsSeed;
+use rosu_pp::model::mods::rosu_mods::{GameMode, GameModsIntermode};
 use rosu_pp::{Beatmap, Difficulty, GameMods, Performance};
+use serde::de::DeserializeSeed;
 
 /// The `rosu-pp` release and the osu!lazer commit it ports. Written into the index as `ppver`, so
 /// that a pp rebalance is visible as a change in the index rather than as numbers quietly moving.
@@ -89,11 +91,28 @@ pub struct Play {
     /// `CL` changes the whole calculation, so dropping them misprices a play silently. Empty for a
     /// stable-era replay, which has none to record.
     pub mods_names: Vec<String>,
+    /// The appended blob's mods array, verbatim. It carries each mod's **settings**, which no
+    /// bitfield can express and which change the answer: measured, 16 of this library's 355
+    /// lazer-era replays carry them, so a `DT` play at `1.3` priced from the bitfield alone comes
+    /// out as a `DT` play at `1.5`, and a `DA` play ignores its overrides entirely. `None` for
+    /// every stable-era replay, which has no blob.
+    pub mods_json: Option<String>,
     /// `[count300, count100, count50, geki, katu, miss]`.
     pub counts: [u16; 6],
     pub max_combo: u16,
     /// The `.osr`'s format version, which decides stable or lazer semantics.
     pub version: i32,
+}
+
+/// The ruleset byte of an `.osr` as rosu-mods' enum, so mode-specific acronyms resolve (`4K` is a
+/// mania mod) instead of arriving as "unknown".
+const fn game_mode(mode: u8) -> GameMode {
+    match mode {
+        1 => GameMode::Taiko,
+        2 => GameMode::Catch,
+        3 => GameMode::Mania,
+        _ => GameMode::Osu,
+    }
 }
 
 /// The acronym lazer uses for the Classic mod: stable's rules, played in lazer.
@@ -124,12 +143,42 @@ impl Map {
     /// Stars and pp for one play. The star rating does not depend on the score, only on the map and
     /// the mods, but every play asks for both because the index stores both.
     pub fn attributes(&self, play: &Play) -> Result<Attributes, Error> {
-        // Start from the legacy bitflags, then add the mods that have no bitflag at all. Losing
-        // the second group misprices a play without saying so — `4K` alone changes a mania map's
-        // key count, and `CL` changes everything. The acronyms are joined and parsed once, because
-        // `rosu-mods` already knows every mod's spelling and reimplementing that table here would
-        // be a second place to be wrong.
-        let mods = {
+        // **Prefer the appended blob, because it carries settings.** Lazer writes the score's
+        // complete mod list there — `APIMod[]`, including the mods that *do* have a bitflag, which
+        // is why the measured example is `[{"acronym":"NF"},{"acronym":"DT","settings":{…}}]` — so
+        // when it decodes it is both the fuller and the more accurate source and the bitfield adds
+        // nothing. `GameModsSeed` is rosu-mods' own entry point for exactly this shape, and it
+        // resolves mode-specific acronyms (`4K` is mania's) from the mode we pass.
+        //
+        // `deny_unknown_fields: false` on purpose: a setting this version does not know about must
+        // not sink the whole deserialization. Losing a play's mods is worse than carrying one field
+        // we cannot name.
+        let from_blob = play.mods_json.as_deref().and_then(|json| {
+            // An empty list must fall through to the bitfield, not win: a blob that names no mods
+            // while the bitfield names some would otherwise silently erase them.
+            let raw: Vec<serde_json::Value> = serde_json::from_str(json).ok()?;
+            if raw.is_empty() {
+                return None;
+            }
+
+            let mut de = serde_json::Deserializer::from_str(json);
+            GameModsSeed::Mode {
+                mode: game_mode(play.mode),
+                deny_unknown_fields: false,
+            }
+            .deserialize(&mut de)
+            .ok()
+            // The seed yields `rosu_mods::GameMods`, which is a different type from the
+            // `rosu_pp::GameMods` that `Performance` takes. rosu-pp has a `From` for exactly this.
+            .map(GameMods::from)
+        });
+
+        // Otherwise start from the legacy bitflags, then add the mods that have no bitflag at all.
+        // Losing the second group misprices a play without saying so — `4K` alone changes a mania
+        // map's key count, and `CL` changes everything. The acronyms are joined and parsed once,
+        // because `rosu-mods` already knows every mod's spelling and reimplementing that table here
+        // would be a second place to be wrong.
+        let mods = from_blob.unwrap_or_else(|| {
             let mut all = GameModsIntermode::from_bits(play.mods.max(0) as u32);
             if !play.mods_names.is_empty() {
                 // This parse cannot fail: an acronym `rosu-mods` does not recognise becomes an
@@ -140,7 +189,7 @@ impl Map {
                 all.extend(extra);
             }
             GameMods::from(all)
-        };
+        });
 
         // **The 4th and 5th counts are not judgements in osu!standard.** osu! reports them as
         // `null` for a std score while `stable` writes real numbers into those slots — its slider
@@ -250,6 +299,7 @@ mod tests {
             mode: 0,
             mods,
             mods_names: Vec::new(),
+            mods_json: None,
             counts: [64, 0, 0, 0, 0, 0],
             max_combo: 64,
             version,
@@ -304,6 +354,36 @@ mod tests {
         );
     }
 
+    /// **The gate for 4a-i.** A settings-bearing mod must price differently from the same mod at
+    /// its default, or the settings are not reaching `rosu-mods` and the fix is cosmetic — which is
+    /// exactly the failure the old code had, where the field was dropped and nothing said so.
+    #[test]
+    fn a_mod_setting_changes_the_result_and_only_the_blob_carries_it() {
+        let map = Map::parse(&tiny_map()).expect("must decode");
+
+        // The same bitfield both times (DT = 64): the difference has to come from the blob, since
+        // a bitflag cannot express a speed at all.
+        let bitfield_only = play(64, 30_000_019);
+        let at_1_3 = Play {
+            mods_json: Some(r#"[{"acronym":"DT","settings":{"speed_change":1.3}}]"#.to_owned()),
+            ..play(64, 30_000_019)
+        };
+
+        let default_speed = map.attributes(&bitfield_only).expect("bitfield");
+        let slower = map.attributes(&at_1_3).expect("with settings");
+
+        assert_ne!(
+            default_speed, slower,
+            "1.3x must not price as the default 1.5x"
+        );
+        assert!(
+            slower.stars < default_speed.stars,
+            "a slower clock is a lower star rating: {} vs {}",
+            slower.stars,
+            default_speed.stars
+        );
+    }
+
     /// **The half of the question the version cannot answer.** A play set in *lazer with Classic
     /// enabled* carries a lazer-era version but stable's rules. No replay in this library does
     /// that, so nothing here would have caught it — a stranger's clone would.
@@ -315,6 +395,7 @@ mod tests {
             mode: 0,
             mods: 0,
             mods_names: Vec::new(),
+            mods_json: None,
             counts: [40, 20, 4, 0, 0, 0],
             max_combo: 64,
             version: 30_000_019,
@@ -374,6 +455,7 @@ mod tests {
             max_combo: 64,
             mods: 0,
             mods_names: Vec::new(),
+            mods_json: None,
             version: 0,
         };
         let stable = map

@@ -99,6 +99,13 @@ pub struct Header {
     /// carry mods in the appended blob against 172 with a bitflag, so about nine plays would be
     /// mislabelled as having no mods at all without these. Empty for stable-era replays.
     pub mods_names: Vec<String>,
+    /// The appended blob's mods array as **verbatim JSON**, for handing to `rosu-mods`. It carries
+    /// the **settings** as well as the acronyms — `speed_change`, `drain_rate`, whatever comes next
+    /// — which no bitfield can express and which change the number: measured, 16 of this library's
+    /// 355 lazer-era replays carry settings, so pricing them from the bitfield alone uses `DT`'s
+    /// default `1.5` instead of the speed actually played. `None` when the file has no blob, which
+    /// is every stable-era replay.
+    pub mods_json: Option<String>,
     /// Present only when the file carries one. `-1`, which both clients write for "never
     /// submitted", is an absence and becomes `None`.
     pub online_score_id: Option<i64>,
@@ -161,7 +168,7 @@ pub fn parse(buf: &[u8]) -> Result<Header, Error> {
     let timestamp = take_i64(buf, &mut at)?;
 
     let data_length = take_i32(buf, &mut at)?;
-    let (online_score_id, mods_names) = read_tail(buf, data_length, at);
+    let (online_score_id, mods_names, mods_json) = read_tail(buf, data_length, at);
 
     Ok(Header {
         mode,
@@ -176,6 +183,7 @@ pub fn parse(buf: &[u8]) -> Result<Header, Error> {
         mods,
         timestamp,
         mods_names,
+        mods_json,
         online_score_id,
     })
 }
@@ -192,9 +200,13 @@ pub fn parse(buf: &[u8]) -> Result<Header, Error> {
 /// Everything here is best-effort. A file whose blob is truncated, not LZMA, or not JSON falls
 /// back to the legacy field rather than failing — losing the extra fields of one replay is not a
 /// reason to lose the replay.
-fn read_tail(buf: &[u8], data_length: i32, after_header: usize) -> (Option<i64>, Vec<String>) {
+fn read_tail(
+    buf: &[u8],
+    data_length: i32,
+    after_header: usize,
+) -> (Option<i64>, Vec<String>, Option<String>) {
     if data_length < 0 {
-        return (None, Vec::new());
+        return (None, Vec::new(), None);
     }
     let body_end = after_header.saturating_add(data_length as usize);
     let legacy = id_at(buf, body_end);
@@ -202,20 +214,29 @@ fn read_tail(buf: &[u8], data_length: i32, after_header: usize) -> (Option<i64>,
     // The appended blob, if there is one, and only if its declared length really is there: a
     // truncated or hostile length must not become a huge allocation.
     let Some(blob_len) = length_at(buf, body_end + 8) else {
-        return (legacy, Vec::new());
+        return (legacy, Vec::new(), None);
     };
     let end = body_end
         .saturating_add(12)
         .saturating_add(blob_len as usize);
     let Some(blob) = buf.get(body_end + 12..end) else {
-        return (legacy, Vec::new());
+        return (legacy, Vec::new(), None);
     };
 
     match decode_appended(blob) {
         // The blob is authoritative when it decodes, even where it says "no online id": it is the
         // newer and only-kept-in-sync copy, and the legacy field is `-1` in every such file.
-        Some((id, mods)) => (id.or(legacy), mods),
-        None => (legacy, Vec::new()),
+        Some((id, mods)) => {
+            let names = mods
+                .iter()
+                .filter_map(|entry| entry.get("acronym")?.as_str().map(str::to_owned))
+                .collect();
+            // Re-serialised unchanged, so nothing the parser does not understand is lost on the
+            // way to `rosu-mods`. If it will not serialise it was not JSON to begin with.
+            let json = serde_json::to_string(&mods).ok();
+            (id.or(legacy), names, json)
+        }
+        None => (legacy, Vec::new(), None),
     }
 }
 
@@ -224,26 +245,21 @@ fn read_tail(buf: &[u8], data_length: i32, after_header: usize) -> (Option<i64>,
 #[derive(serde::Deserialize)]
 struct Appended {
     online_id: Option<i64>,
+    /// The mod objects **as raw JSON**, not typed fields. `rosu-mods` deserializes this exact shape
+    /// — its own tests feed it `{"acronym": "DA", "settings": {…}}` alongside bare
+    /// `{"acronym": "CS"}` — so keeping it verbatim preserves settings this crate has no business
+    /// knowing about, and keeps `osu-core` from depending on `rosu-mods`, which it must not: this
+    /// is the crate that has to keep compiling for wasm32 as the Worker's domain crate.
     #[serde(default)]
-    mods: Vec<AppendedMod>,
+    mods: Vec<serde_json::Value>,
 }
 
-#[derive(serde::Deserialize)]
-struct AppendedMod {
-    acronym: String,
-}
-
-fn decode_appended(blob: &[u8]) -> Option<(Option<i64>, Vec<String>)> {
+fn decode_appended(blob: &[u8]) -> Option<(Option<i64>, Vec<serde_json::Value>)> {
     let mut raw = Vec::new();
     lzma_rs::lzma_decompress(&mut &blob[..], &mut raw).ok()?;
 
     let appended: Appended = serde_json::from_slice(&raw).ok()?;
-    let mods = appended
-        .mods
-        .into_iter()
-        .map(|entry| entry.acronym)
-        .collect();
-    Some((appended.online_id.filter(|id| *id > 0), mods))
+    Some((appended.online_id.filter(|id| *id > 0), appended.mods))
 }
 
 /// A score id at an offset, `None` where the file is too short, and never a non-positive value —
@@ -455,6 +471,26 @@ mod tests {
         assert_eq!(header.mods_names, ["CL", "SV2"]);
         // The bitflag field is untouched by any of this and still says DT.
         assert_eq!(header.mods, 64);
+    }
+
+    /// **The defect this closes.** A mod's *settings* change the number and live only in the blob —
+    /// `speed_change`, `drain_rate` — and the first parser kept nothing but the acronym, so a `DT`
+    /// play at `1.3` was priced at the default `1.5` and a `DA` play ignored its overrides
+    /// entirely. Measured: 16 of this library's 355 lazer-era replays carry settings.
+    #[test]
+    fn the_appended_blob_keeps_mod_settings_verbatim() {
+        let json = r#"{"online_id":1,"mods":[{"acronym":"NF"},{"acronym":"DT","settings":{"speed_change":1.3}}]}"#;
+        let file = build_lazer([1, 0, 0, 0, 0, 0], false, 1, Some(json));
+        let header = parse(&file).expect("must parse");
+
+        assert_eq!(header.mods_names, ["NF", "DT"]);
+        let kept = header.mods_json.as_deref().expect("settings must survive");
+        assert!(kept.contains("speed_change"), "got {kept}");
+        assert!(kept.contains("1.3"), "got {kept}");
+        // Kept as the original objects, not re-serialised from typed fields: a `{"acronym":"NF"}`
+        // entry must not gain a `"settings": null`, because `rosu-mods` reads this back and that is
+        // not a shape it accepts.
+        assert!(!kept.contains("null"), "got {kept}");
     }
 
     /// Losing the extra fields of one replay is not a reason to lose the replay. A blob that is

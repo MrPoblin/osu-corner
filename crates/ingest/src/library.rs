@@ -274,6 +274,7 @@ pub fn build(
                 max_combo: header.max_combo,
                 mode: header.mode,
                 mods_names: header.mods_names.clone(),
+                mods_json: header.mods_json.clone(),
                 version: header.version,
             }),
             Err(_) => unpriced += 1,

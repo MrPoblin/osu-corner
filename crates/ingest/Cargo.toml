@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 osu-core.workspace = true
 rayon.workspace = true
+rosu-mods = { version = "0.4.1", features = ["serde"] }
 rosu-pp = "4.0.1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde.workspace = true
