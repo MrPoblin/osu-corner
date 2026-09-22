@@ -144,6 +144,10 @@ pub struct Header {
     /// play. `None` for every stable-era replay, whose legacy counts carry no slider information at
     /// all — measured, every lazer-era blob carried both named objects.
     pub sliders: Option<SliderCounts>,
+    /// **The score before the mod multiplier**, which only the appended blob records. Together with
+    /// `score` it recovers the multiplier the client applied, which is the only way the standardised
+    /// multiplier table can be checked against real scores rather than only against source.
+    pub total_score_without_mods: Option<i64>,
 }
 
 impl Header {
@@ -222,6 +226,7 @@ pub fn parse(buf: &[u8]) -> Result<Header, Error> {
         online_score_id: tail.online_score_id,
         stored_rank: tail.stored_rank,
         sliders: tail.sliders,
+        total_score_without_mods: tail.total_score_without_mods,
     })
 }
 
@@ -245,10 +250,11 @@ struct Tail {
     mods_json: Option<String>,
     stored_rank: Option<String>,
     sliders: Option<SliderCounts>,
+    total_score_without_mods: Option<i64>,
 }
 
 impl Tail {
-    /// Nothing found: no id, no mods, no letter, no slider counts.
+    /// Nothing found: no id, no mods, no letter, no slider counts, no pre-mod score.
     fn empty() -> Self {
         Self {
             online_score_id: None,
@@ -256,6 +262,7 @@ impl Tail {
             mods_json: None,
             stored_rank: None,
             sliders: None,
+            total_score_without_mods: None,
         }
     }
 }
@@ -288,7 +295,7 @@ fn read_tail(buf: &[u8], data_length: i32, after_header: usize) -> Tail {
     match decode_appended(blob) {
         // The blob is authoritative when it decodes, even where it says "no online id": it is the
         // newer and only-kept-in-sync copy, and the legacy field is `-1` in every such file.
-        Some((id, mods, stored_rank, sliders)) => {
+        Some((id, mods, stored_rank, sliders, total_score_without_mods)) => {
             let names = mods
                 .iter()
                 .filter_map(|entry| entry.get("acronym")?.as_str().map(str::to_owned))
@@ -302,6 +309,7 @@ fn read_tail(buf: &[u8], data_length: i32, after_header: usize) -> Tail {
                 mods_json: json,
                 stored_rank,
                 sliders,
+                total_score_without_mods,
             }
         }
         None => Tail {
@@ -319,6 +327,10 @@ struct Appended {
     /// lazer's own letter for the play. It has no legacy counterpart, and it is the only failure
     /// flag that exists anywhere in either client's file.
     rank: Option<String>,
+    /// The score before the mod multiplier was applied. Because a lazer-era `score` is the *with*-mods
+    /// value, the pair recovers the multiplier the client used — which is what makes the standardised
+    /// multiplier table checkable against real scores instead of only against source (§8).
+    total_score_without_mods: Option<i64>,
     /// The named `statistics` lazer writes, and the `maximum_statistics` its accuracy divides by.
     /// Measured present in every one of this library's 355 lazer-era blobs. Only the slider counts
     /// are modelled — see [`SliderCounts`].
@@ -347,13 +359,14 @@ struct NamedStatistics {
 }
 
 /// What a decodable appended blob yields: the online id, the mods array verbatim, lazer's own
-/// letter, and the slider counts. A tuple behind an alias because clippy flags the four-parameter
-/// form written inline as too complex to read.
+/// letter, the slider counts, and the pre-mod score. A tuple behind an alias because clippy flags the
+/// inline form as too complex to read.
 type Decoded = (
     Option<i64>,
     Vec<serde_json::Value>,
     Option<String>,
     Option<SliderCounts>,
+    Option<i64>,
 );
 
 fn decode_appended(blob: &[u8]) -> Option<Decoded> {
@@ -380,6 +393,7 @@ fn decode_appended(blob: &[u8]) -> Option<Decoded> {
         appended.mods,
         appended.rank,
         sliders,
+        appended.total_score_without_mods.filter(|score| *score > 0),
     ))
 }
 

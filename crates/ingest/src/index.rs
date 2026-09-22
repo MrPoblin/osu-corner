@@ -28,7 +28,14 @@ use std::path::Path;
 /// What produced the `score` column. **Not a version, because the number is ours**: it is this
 /// tool's implementation of lazer's conversion, and saying so is the honest label the owner asked for
 /// when the API turned out not to expose osu!'s own converted value (§8).
-const SCOREVER: &str = "our port of lazer @ 28c846b4d9366484792e27f4729cd1afa2cdeb66";
+///
+/// Two commits, because the port genuinely draws on two and naming only one would be false. The
+/// **conversion** is the pinned commit's — verified line by line against it, and `case 3` is the one
+/// place it differs from today's, flagged in §8. The **mod multiplier table** cannot be the pinned
+/// commit's: at `28c846b4` the migration multiplied each mod's `Mod.ScoreMultiplier` property, and
+/// measuring 324 lazer-era replays that record both the pre-mod and final score shows every one of
+/// them used the later `ScoreMultiplierCalculator` values instead (§8).
+const SCOREVER: &str = "our port of lazer @ 28c846b4 (conversion) + V2 mod multipliers @ 577d29f21d816754dba28f95ef3290ffe6da1f99";
 
 /// The index format's own version. Bumped when a file's **shape** changes, never when its contents
 /// do — a rebalance changes every number in the file and no reader needs telling.
@@ -52,10 +59,14 @@ const SCORE_V2: i32 = 1 << 29;
 pub struct Beatmap {
     pub meta: osu::Beatmap,
     pub stars: f64,
-    /// The map's V1 reference frame, which the recalculation needs for every play on it (§8 step 5a).
-    /// `None` for a convert, whose playable objects are not the ones in the file — its plays get no
-    /// score rather than a wrong one.
-    pub frame: Option<score::Frame>,
+    /// The map's V1 reference frame **per mode a play on it is in**, which the recalculation needs for
+    /// every play (§8 step 5a). Keyed by the `.osr`'s mode byte, because one map can carry plays in
+    /// more than one ruleset and the frame is not the same for both.
+    pub frames: HashMap<u8, score::Frame>,
+    /// The number of columns lazer would give this map as a **mania convert**, or `None` when the map
+    /// is itself a mania map — where lazer's `GetLegacyScoreMultiplier` returns before applying the
+    /// column rule at all, so the factor can never apply.
+    pub mania_columns: Option<i32>,
 }
 
 /// One play, ready to be written: what the file and its filename said, the map it was set on, and
@@ -218,7 +229,7 @@ fn mode_file(
         let Some(beatmap_row) = maps.get(play.md5.as_str()) else {
             return Err("a play's beatmap left the table".to_owned());
         };
-        let (score, legacy_score) = scores(play, beatmap_row.frame.as_ref());
+        let (score, legacy_score) = scores(play, beatmap_row);
         if score.is_null() {
             report.awaiting_score += 1;
         } else {
@@ -323,21 +334,10 @@ fn mods_of(play: &pp::Play) -> Mods {
 fn label(play: &pp::Play) -> String {
     // The acronyms and their order come from one place, shared with the score recalculation. A second
     // spelling here would be a second thing to keep in step, and a badge that disagreed with the
-    // multiplier is a bug nobody would ever see.
-    let mut text = score::acronyms(play).concat();
-
-    // Stable *is* Classic and osu!'s API says so, so the label carries it even though the file does
-    // not (§5). It is added **only** here: the multiplier must not see it, because the client never
-    // applied it — which is a question about osu!'s own conversion, not one to answer by accident.
-    if !play.lazer() && !text.contains(CL) {
-        text.push_str(CL);
-    }
-
-    text
+    // multiplier is a bug nobody would ever see. That shared list already carries the `CL` a
+    // stable-era play is (see `score::acronyms`), so there is nothing to append here.
+    score::acronyms(play).concat()
 }
-
-/// The acronym stable_ is Classic by.
-const CL: &str = "CL";
 
 /// The blob's mod array, but **only when a mod actually carries settings**. Without that test the
 /// array would be the label spelled a second time, on every lazer-era play.
@@ -362,7 +362,7 @@ fn settings_of(play: &pp::Play) -> Option<Value> {
 /// standardised score, so it belongs in the `score` column like a lazer-era play. osu! special-cases
 /// exactly this in `ModScoreV2`. **This library has zero such plays**, so nothing here would catch a
 /// mistake — a stranger's might not be so lucky (a ponytail for a later reader, not a bug today).
-fn scores(play: &Play, frame: Option<&score::Frame>) -> (Value, Value) {
+fn scores(play: &Play, beatmap: &Beatmap) -> (Value, Value) {
     let recorded = Value::from(play.recorded);
 
     // A lazer-era play was *scored* by the standardised system, so `score` is its recorded value and
@@ -371,25 +371,76 @@ fn scores(play: &Play, frame: Option<&score::Frame>) -> (Value, Value) {
         return (recorded, Value::Null);
     }
 
-    // Otherwise the recorded value is the V1 one, and `score` is the recalculation. `None` means a
-    // mod's multiplier could not be resolved — a missing score is better than a wrong one.
-    //
-    // The rate is `None` on purpose: only a lazer-era blob records a `speed_change`, and a lazer-era
-    // play is never converted.
-    let Some(frame) = frame else {
+    // The recorded value is the V1 one, and `score` is the recalculation — against the frame built for
+    // **this play's** mode, which may differ from the map's own ruleset if the play was a convert.
+    let Some(frame) = beatmap.frames.get(&play.play.mode) else {
         return (Value::Null, recorded);
     };
-    let converted = score::convert_osu(
+
+    let mode = score::mode_of_byte(play.play.mode);
+    let acronyms = score::acronyms(&play.play);
+    let score_v2 = play.play.mods & SCORE_V2 != 0;
+
+    // mania's legacy multiplier is the only one with a **map**-dependent part, and it applies only to
+    // a convert: the column count the play was played in comes from the key mod rather than the map.
+    let legacy = score::legacy_multiplier(mode, &acronyms, score_v2)
+        * mania_column_factor_for(play, beatmap);
+
+    // Catch's arm is the one that needs numbers no other mode does, and they come from the legacy
+    // counts because a stable-era score records no maxima of its own: lazer derives
+    // `MaximumStatistics[SmallTickHit]` as `SmallTickHit + SmallTickMiss`, which is catch's
+    // `count50 + countkatu`, and `MaximumStatistics[Great]` by summing every basic result, which for
+    // catch is `count300 + countmiss` — `count100` being a large tick rather than a 100.
+    let achieved = score::Achieved {
+        v1_total: play.recorded,
+        accuracy: play.attributes.accuracy,
+        max_combo: u32::from(play.play.max_combo),
+        misses: u32::from(play.play.counts[5]),
+        tiny_droplets: (
+            u32::from(play.play.counts[2]),
+            u32::from(play.play.counts[2]) + u32::from(play.play.counts[4]),
+        ),
+        fruits_max: u32::from(play.play.counts[0]) + u32::from(play.play.counts[5]),
+    };
+
+    let converted = score::convert(
+        mode,
         frame,
-        play.recorded,
-        play.attributes.accuracy,
-        u32::from(play.play.max_combo),
-        u32::from(play.play.counts[5]),
-        &score::acronyms(&play.play),
-        None,
+        &achieved,
+        legacy,
+        score::standardised_multiplier(mode, &acronyms),
     );
 
     (converted.map_or(Value::Null, Value::from), recorded)
+}
+
+/// mania's convert-only column factor for one play: `1.0` unless the play is a mania convert and a key
+/// mod changed the column count.
+///
+/// The key mods are the stable bitfield's `1K`…`9K`, and `CO` is stable's `KeyCoop`, which lazer turns
+/// into `DualStages` and therefore *doubles* the column count. Both only take effect for a convert —
+/// `ManiaKeyMod.ApplyToBeatmapConverter` returns early for a native mania map, with the comment
+/// *"Although this can work, for now let's not allow keymods for mania-specific beatmaps"*.
+fn mania_column_factor_for(play: &Play, beatmap: &Beatmap) -> f64 {
+    let Some(original) = beatmap.mania_columns else {
+        return 1.0;
+    };
+
+    let columns = ["1K", "2K", "3K", "4K", "5K", "6K", "7K", "8K", "9K"]
+        .iter()
+        .find_map(|name| {
+            play.play
+                .mods_names
+                .iter()
+                .any(|mods_name| mods_name == name)
+                .then(|| name.trim_end_matches('K').parse::<i32>().ok())
+                .flatten()
+        })
+        .unwrap_or(original);
+
+    let dual = play.play.mods_names.iter().any(|name| name == "CO");
+
+    score::mania_column_factor(original, if dual { columns * 2 } else { columns })
 }
 
 /// The stored letter, as its position in §5's wire order: `XH` 0 through `F` 8.
@@ -534,24 +585,93 @@ mod tests {
         assert_ne!(mods_of(&plain).sort_key(), mods_of(&with).sort_key());
     }
 
+    /// A minimal map row, so a test hands `scores` the two things it actually reads off it: the map's
+    /// own mode, and optionally a frame.
+    fn map_row(mode: u8, frame: Option<score::Frame>) -> Beatmap {
+        Beatmap {
+            meta: osu::Beatmap {
+                mode,
+                ..Default::default()
+            },
+            stars: 4.0,
+            frames: frame
+                .map(|frame| [(mode, frame)].into_iter().collect())
+                .unwrap_or_default(),
+            mania_columns: None,
+        }
+    }
+
     /// Which column the recorded score lands in is decided by the era, and never by both.
     #[test]
     fn exactly_one_score_column_is_filled() {
         // Stable-era: the recorded number is the V1 one, and `score` waits for step 5a.
-        let (score, legacy) = scores(&entry(&play(0, &[], 20_240_102, None)), None);
+        let (score, legacy) = scores(&entry(&play(0, &[], 20_240_102, None)), &map_row(0, None));
         assert_eq!(score, Value::Null);
         assert_eq!(legacy, Value::from(706_543));
 
         // Lazer-era: the recorded number already is standardised, and there was never a V1 value.
-        let (score, legacy) = scores(&entry(&play(0, &[], 30_000_019, None)), None);
+        let (score, legacy) = scores(&entry(&play(0, &[], 30_000_019, None)), &map_row(0, None));
         assert_eq!(score, Value::from(706_543));
         assert_eq!(legacy, Value::Null);
 
         // ScoreV2 in a stable-era file was recorded standardised too, so it moves columns even
         // though the file is stable's. No such play exists in this library.
-        let (score, legacy) = scores(&entry(&play(SCORE_V2, &[], 20_240_102, None)), None);
+        let (score, legacy) = scores(
+            &entry(&play(SCORE_V2, &[], 20_240_102, None)),
+            &map_row(0, None),
+        );
         assert_eq!(score, Value::from(706_543));
         assert_eq!(legacy, Value::Null);
+    }
+
+    /// **A convert is scored against the frame for *its* mode, never the map's.** The frames are keyed
+    /// by the `.osr`'s mode byte precisely so this cannot go wrong, and this is the test that says so:
+    /// a taiko play on an osu! map must use the taiko frame.
+    #[test]
+    fn a_play_uses_the_frame_for_its_own_mode_not_the_maps() {
+        // One map, two frames — a small taiko one and a large osu! one, so using the wrong one is
+        // visible in the number rather than merely plausible.
+        let mut beatmap = map_row(0, None);
+        beatmap.frames.insert(
+            0,
+            score::Frame {
+                accuracy_score: 9_000,
+                ..Default::default()
+            },
+        );
+        beatmap.frames.insert(
+            1,
+            score::Frame {
+                accuracy_score: 300,
+                ..Default::default()
+            },
+        );
+
+        let mut taiko_play = play(0, &[], 20_240_102, None);
+        taiko_play.mode = 1;
+        let (taiko_score, _) = scores(&entry(&taiko_play), &beatmap);
+
+        let osu_play = play(0, &[], 20_240_102, None);
+        let (osu_score, _) = scores(&entry(&osu_play), &beatmap);
+
+        assert!(taiko_score.is_number(), "a taiko convert should convert");
+        assert!(osu_score.is_number(), "an osu! play should convert");
+        assert_ne!(
+            taiko_score, osu_score,
+            "the two modes must not share one map's frame"
+        );
+    }
+
+    /// A play whose mode has **no** frame on its map gets no score, rather than a frame from a
+    /// different mode.
+    #[test]
+    fn a_mode_with_no_frame_gets_no_score() {
+        let mut play = play(0, &[], 20_240_102, None);
+        play.mode = 2;
+
+        let (score, legacy) = scores(&entry(&play), &map_row(0, Some(score::Frame::default())));
+        assert_eq!(score, Value::Null);
+        assert_eq!(legacy, Value::from(706_543));
     }
 
     /// The whole point of the sort above: the same library must produce the same bytes. Anything
@@ -571,7 +691,8 @@ mod tests {
                     version: "Tarrasky's True Love".to_owned(),
                 },
                 stars: 4.54,
-                frame: None,
+                frames: HashMap::new(),
+                mania_columns: None,
             },
         )]
         .into_iter()

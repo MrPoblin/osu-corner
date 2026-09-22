@@ -280,27 +280,20 @@ impl Map {
     /// seconds across a library — and buys the frame being written against the type whose API actually
     /// exposes what it needs. Upgrade path: build the frame from `rosu-pp`'s types if their slider ever
     /// grows a curve accessor.
-    pub fn legacy_frame(&mut self, bytes: &[u8]) -> Result<crate::score::Frame, Error> {
-        use rosu_pp::any::DifficultyAttributes;
-
-        let _ = DifficultyAttributes::Osu;
-        let attributes = Difficulty::new()
-            .checked_calculate_for_mode::<rosu_pp::osu::Osu>(&self.inner)
-            .map_err(|error| Error::Suspicious(format!("{error:?}")))?;
-        let multiplier = attributes.legacy_score_base_multiplier;
-
+    pub fn legacy_frame(
+        &mut self,
+        bytes: &[u8],
+        mode: crate::score::Mode,
+    ) -> Result<crate::score::Frame, Error> {
         let mut map = rosu_map::Beatmap::from_bytes(bytes)
             .map_err(|error| Error::Decode(error.to_string()))?;
 
-        // A map set in another ruleset and *played* in osu!standard is a convert, and a convert's
-        // playable objects are not the ones in the file — a taiko hit becomes a circle. Simulating the
-        // file's objects for it would produce a confident wrong number, so it gets no frame and its
-        // plays get no score, which the run reports.
-        if map.mode != rosu_map::section::general::GameMode::Osu {
-            return Err(Error::Suspicious("a convert, not an osu! map".to_owned()));
-        }
-
-        Ok(crate::score::frame(&mut map, multiplier))
+        // **No refusal for a convert.** The frame describes what the file holds, scored by whichever
+        // ruleset's converter the play used, and each frame models its own converter: osu!, catch and
+        // mania's are 1:1, and taiko's — the one that can turn a slider into a run of hit circles —
+        // reads the map's own mode to decide. So a convert needs no special case here and its plays
+        // get a score rather than a dash.
+        Ok(crate::score::frame_for(&mut map, mode))
     }
 
     /// Stars and pp for one play. The star rating does not depend on the score, only on the map and

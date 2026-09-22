@@ -340,18 +340,65 @@ pub fn build(
         // The index describes the map as well as pricing its plays: the difficulty name, the artist
         // and title, and the two online ids a cover URL and an osu! link are built from. Parsed here
         // rather than in the writer so the file is read once.
-        // The frame is per map, and every stable-era play on it converts against the same reference.
-        let frame = map.legacy_frame(&bytes).ok();
-        if let (Ok(meta), Ok(no_mod_stars)) = (osu::parse(&bytes), map.stars()) {
-            beatmaps.insert(
-                md5.clone(),
-                index::Beatmap {
-                    meta,
-                    stars: no_mod_stars,
-                    frame,
-                },
-            );
+        let (Ok(meta), Ok(no_mod_stars)) = (osu::parse(&bytes), map.stars()) else {
+            continue;
+        };
+        // One frame **per mode this map's plays are in**, because a map can carry plays in more than
+        // one ruleset and the reference is not the same for both: a taiko play on an osu! map has its
+        // sliders split into circles where an osu! play on the same file does not. Built once per mode
+        // rather than per play.
+        let modes: std::collections::BTreeSet<u8> = plays.iter().map(|p| p.play.mode).collect();
+        let mut frames = HashMap::new();
+        for mode in modes {
+            if let Ok(frame) = map.legacy_frame(&bytes, crate::score::mode_of_byte(mode)) {
+                frames.insert(mode, frame);
+            }
         }
+
+        // mania's column count for this map **as a convert**, which is part of its V1 multiplier.
+        // `None` when the map is itself a mania map, where lazer's column rule can never apply.
+        //
+        // rosu-map is parsed a second time for this, which is the same second parse the frames need
+        // and is one per map rather than one per play.
+        let mania_columns = if meta.mode == 3 {
+            None
+        } else {
+            rosu_map::Beatmap::from_bytes(&bytes)
+                .ok()
+                .map(|rosu_map_map| {
+                    use rosu_map::section::hit_objects::HitObjectKind;
+
+                    let end_time_objects = rosu_map_map
+                        .hit_objects
+                        .iter()
+                        .filter(|object| {
+                            matches!(
+                                object.kind,
+                                HitObjectKind::Slider(_)
+                                    | HitObjectKind::Spinner(_)
+                                    | HitObjectKind::Hold(_)
+                            )
+                        })
+                        .count() as i32;
+
+                    crate::score::mania_columns(
+                        f64::from(rosu_map_map.circle_size),
+                        f64::from(rosu_map_map.overall_difficulty),
+                        rosu_map_map.hit_objects.len() as i32,
+                        end_time_objects,
+                    )
+                })
+        };
+
+        beatmaps.insert(
+            md5.clone(),
+            index::Beatmap {
+                meta,
+                stars: no_mod_stars,
+                frames,
+                mania_columns,
+            },
+        );
         for staged in plays {
             match map.attributes(&staged.play) {
                 Ok(attributes) => {
