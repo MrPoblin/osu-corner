@@ -333,19 +333,22 @@ pub fn build(
             unpriced += plays.len() as u64;
             continue;
         };
-        let Ok(map) = pp::Map::parse(&bytes) else {
+        let Ok(mut map) = pp::Map::parse(&bytes) else {
             unpriced += plays.len() as u64;
             continue;
         };
         // The index describes the map as well as pricing its plays: the difficulty name, the artist
         // and title, and the two online ids a cover URL and an osu! link are built from. Parsed here
         // rather than in the writer so the file is read once.
+        // The frame is per map, and every stable-era play on it converts against the same reference.
+        let frame = map.legacy_frame(&bytes).ok();
         if let (Ok(meta), Ok(no_mod_stars)) = (osu::parse(&bytes), map.stars()) {
             beatmaps.insert(
                 md5.clone(),
                 index::Beatmap {
                     meta,
                     stars: no_mod_stars,
+                    frame,
                 },
             );
         }
@@ -406,7 +409,7 @@ pub fn build(
         );
     }
     println!(
-        "  {:<17}{:>6} plays carry a score, {:>6} wait for step 5a (the recalculation)",
+        "  {:<17}{:>6} plays converted, {:>6} could not be (see the score column)",
         "score", report.scored, report.awaiting_score
     );
 

@@ -744,6 +744,7 @@ version = "0.1.0"
 dependencies = [
  "osu-core",
  "rayon",
+ "rosu-map",
  "rosu-mods",
  "rosu-pp",
  "rusqlite",

@@ -12,6 +12,9 @@ mod ledger;
 mod library;
 mod mirror;
 mod pp;
+#[cfg(test)]
+mod probe;
+mod score;
 
 use serde::Deserialize;
 use std::fs;

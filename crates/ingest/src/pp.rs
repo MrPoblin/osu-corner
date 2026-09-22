@@ -57,7 +57,7 @@ pub const ROSU_PP: &str = "rosu-pp 4.0.1 @ lazer 28c846b4d9366484792e27f4729cd1a
 
 /// The version at which lazer's replay encoder begins, and therefore the boundary between stable
 /// and lazer score semantics. Measured: 355 of this library's 8,000 replays are at or above it.
-const LAZER_ENCODER: i32 = 30_000_001;
+pub const LAZER_ENCODER: i32 = 30_000_001;
 
 /// What a play on a beatmap came out as: the map's difficulty, and the score's own verdicts.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -266,6 +266,41 @@ impl Map {
             .checked_calculate(&self.inner)
             .map(|attributes| attributes.stars())
             .map_err(|error| Error::Suspicious(format!("{error:?}")))
+    }
+
+    /// The map's V1 reference frame, with the peppy-star multiplier it needs (§8 step 5a).
+    ///
+    /// Both halves come from one difficulty calculation: `legacy_score_base_multiplier` is
+    /// `rosu-pp`'s public version of the multiplier lazer's simulator computes, and it is computed
+    /// with **no mods applied**, which is what the simulator itself uses.
+    ///
+    /// `ponytail:` the frame is built from a **second parse** of the bytes, into `rosu-map`'s own
+    /// `Beatmap` rather than `rosu-pp`'s slimmed one. They are different types, and only rosu-map's
+    /// sliders carry the curve that tick generation needs. It costs one extra parse per map — a few
+    /// seconds across a library — and buys the frame being written against the type whose API actually
+    /// exposes what it needs. Upgrade path: build the frame from `rosu-pp`'s types if their slider ever
+    /// grows a curve accessor.
+    pub fn legacy_frame(&mut self, bytes: &[u8]) -> Result<crate::score::Frame, Error> {
+        use rosu_pp::any::DifficultyAttributes;
+
+        let _ = DifficultyAttributes::Osu;
+        let attributes = Difficulty::new()
+            .checked_calculate_for_mode::<rosu_pp::osu::Osu>(&self.inner)
+            .map_err(|error| Error::Suspicious(format!("{error:?}")))?;
+        let multiplier = attributes.legacy_score_base_multiplier;
+
+        let mut map = rosu_map::Beatmap::from_bytes(bytes)
+            .map_err(|error| Error::Decode(error.to_string()))?;
+
+        // A map set in another ruleset and *played* in osu!standard is a convert, and a convert's
+        // playable objects are not the ones in the file — a taiko hit becomes a circle. Simulating the
+        // file's objects for it would produce a confident wrong number, so it gets no frame and its
+        // plays get no score, which the run reports.
+        if map.mode != rosu_map::section::general::GameMode::Osu {
+            return Err(Error::Suspicious("a convert, not an osu! map".to_owned()));
+        }
+
+        Ok(crate::score::frame(&mut map, multiplier))
     }
 
     /// Stars and pp for one play. The star rating does not depend on the score, only on the map and

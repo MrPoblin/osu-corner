@@ -47,6 +47,12 @@ use std::time::{Duration, Instant};
 const TOKEN_URL: &str = "https://osu.ppy.sh/oauth/token";
 const LOOKUP_URL: &str = "https://osu.ppy.sh/api/v2/beatmaps/lookup";
 
+/// Only the validation probe uses these. They stay test-only on purpose: §2's promise is that **no
+/// osu! API request is made to build the library**, so nothing in a real run may ask osu! for a
+/// score.
+#[cfg(test)]
+const API: &str = "https://osu.ppy.sh/api/v2";
+
 /// One request a second, and back off when told to. osu! publishes a rate limit for the API;
 /// rather than hard-code a number that can change, this stays under any plausible value and obeys
 /// a 429 — so it is correct whether the limit is 60/minute or something else entirely.
@@ -147,6 +153,97 @@ impl Fetcher {
         } else {
             Fetched::Unknown
         }
+    }
+
+    /// Every score this account has on a beatmap, by beatmap id.
+    ///
+    /// **This is the endpoint the validation has to use.** A stable-era replay's trailing id is its
+    /// *legacy* score id, so asking `/api/v2/scores/{id}` returns an unrelated score of the account's;
+    /// the per-map, per-user form returns the account's own scores for that map, one call covering
+    /// every play on it. The join is then that score's `legacy_score_id` against the id in the `.osr`,
+    /// which *confirms* the join rather than assuming it.
+    ///
+    /// Test-only, like [`API`]: a real run never asks osu! for a score.
+    #[cfg(test)]
+    pub fn user_scores(&mut self, beatmap_id: i64, user_id: i64) -> Option<Vec<serde_json::Value>> {
+        for attempt in 1..=LOOKUP_ATTEMPTS {
+            self.pace();
+            let token = self.token()?;
+            let url = format!("{API}/beatmaps/{beatmap_id}/scores/users/{user_id}/all");
+
+            match self.get_with_token(&url, &token) {
+                Ok(body) => {
+                    let value: serde_json::Value = serde_json::from_str(&body).ok()?;
+                    // The `/all` form wraps the list in an object; the plain form returns it as is.
+                    return match value {
+                        serde_json::Value::Array(scores) => Some(scores),
+                        other => other.get("scores")?.as_array().cloned(),
+                    };
+                }
+                // Told to slow down: back off and try again rather than reporting a rate limit as
+                // "osu! does not have this score".
+                Err(ureq::Error::StatusCode(429)) => {
+                    std::thread::sleep(PACE * 2u32.pow(attempt));
+                }
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// One score, by **modern** score id.
+    ///
+    /// §5's example play was documented as returning `legacy_total_score`, `total_score` and
+    /// `legacy_score_id` from an endpoint of this shape, which would make it the oracle for a
+    /// converted score. Whether this endpoint accepts a stable-era replay's id is exactly what a probe
+    /// has to find out rather than assume.
+    #[cfg(test)]
+    pub fn score_by_id(&mut self, id: i64) -> Option<serde_json::Value> {
+        for attempt in 1..=LOOKUP_ATTEMPTS {
+            self.pace();
+            let token = self.token()?;
+            let url = format!("{API}/scores/{id}");
+
+            match self.get_with_token(&url, &token) {
+                Ok(body) => return serde_json::from_str(&body).ok(),
+                Err(ureq::Error::StatusCode(429)) => {
+                    std::thread::sleep(PACE * 2u32.pow(attempt));
+                }
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// This account's best scores, as osu! reports them.
+    ///
+    /// The last oracle 5a needs: the per-map endpoint reports only the **legacy** value in `score`, so
+    /// it cannot check a recalculation. If an entry here matches a staged play and its `score` differs
+    /// from the number inside the `.osr`, that field is the converted total score.
+    ///
+    /// Test-only, like [`API`]: a real run never asks osu! for a score.
+    #[cfg(test)]
+    pub fn user_best(&mut self, user_id: i64, limit: usize) -> Option<Vec<serde_json::Value>> {
+        for attempt in 1..=LOOKUP_ATTEMPTS {
+            self.pace();
+            let token = self.token()?;
+            let url = format!("{API}/users/{user_id}/scores/best?limit={limit}");
+
+            match self.get_with_token(&url, &token) {
+                Ok(body) => {
+                    let value: serde_json::Value = serde_json::from_str(&body).ok()?;
+                    return match value {
+                        serde_json::Value::Array(scores) => Some(scores),
+                        other => other.get("scores")?.as_array().cloned(),
+                    };
+                }
+                Err(ureq::Error::StatusCode(429)) => {
+                    std::thread::sleep(PACE * 2u32.pow(attempt));
+                }
+                Err(_) => return None,
+            }
+        }
+        None
     }
 
     /// MD5 -> beatmap id.

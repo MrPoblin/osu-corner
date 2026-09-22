@@ -16,6 +16,7 @@
 //! - **No ranked-status verdict** — deferred by the owner, so no `beatmaps` field carries one (§5).
 
 use crate::pp;
+use crate::score;
 use osu_core::grade::Rank;
 use osu_core::osu;
 use serde::Serialize;
@@ -23,6 +24,11 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
+
+/// What produced the `score` column. **Not a version, because the number is ours**: it is this
+/// tool's implementation of lazer's conversion, and saying so is the honest label the owner asked for
+/// when the API turned out not to expose osu!'s own converted value (§8).
+const SCOREVER: &str = "our port of lazer @ 28c846b4d9366484792e27f4729cd1afa2cdeb66";
 
 /// The index format's own version. Bumped when a file's **shape** changes, never when its contents
 /// do — a rebalance changes every number in the file and no reader needs telling.
@@ -37,55 +43,6 @@ const MODES: [(u8, &str); 4] = [(0, "osu"), (1, "taiko"), (2, "catch"), (3, "man
 /// modern column, because under ScoreV2 the client recorded a standardised number (§5).
 const SCORE_V2: i32 = 1 << 29;
 
-/// The two mods osu! sets **two** bits for: `NC` carries `DT`'s bit and `PF` carries `SD`'s, but
-/// osu! names only the stronger one — its own API returns `NC` for a nightcore play and never
-/// `DTNC` (measured across this account's best 100: 43 `DT`, 14 `NC`, no overlap).
-const SD: &str = "SD";
-const DT: &str = "DT";
-const NC: &str = "NC";
-const PF: &str = "PF";
-
-/// The legacy mod bits and their acronyms, **in bit order** — which is the order osu! displays them
-/// in, and therefore the order a badge should read.
-///
-/// Neither source of mods can supply this order: `rosu-mods` iterates its own internal one, spelling
-/// a Hidden+DoubleTime play `DTHD`, and osu!'s own API returns its own too (measured on this
-/// library, `HR` before `HD` where the display has `HDHR`). So the expansion is ours, and the test
-/// below pins it to §5's verified example.
-const BITS: [(i32, &str); 31] = [
-    (1 << 0, "NF"),
-    (1 << 1, "EZ"),
-    (1 << 2, "TD"),
-    (1 << 3, "HD"),
-    (1 << 4, "HR"),
-    (1 << 5, SD),
-    (1 << 6, DT),
-    (1 << 7, "RX"),
-    (1 << 8, "HT"),
-    (1 << 9, NC),
-    (1 << 10, "FL"),
-    (1 << 11, "AT"),
-    (1 << 12, "SO"),
-    (1 << 13, "AP"),
-    (1 << 14, PF),
-    (1 << 15, "4K"),
-    (1 << 16, "5K"),
-    (1 << 17, "6K"),
-    (1 << 18, "7K"),
-    (1 << 19, "8K"),
-    (1 << 20, "FI"),
-    (1 << 21, "RD"),
-    (1 << 22, "CM"),
-    (1 << 23, "TP"),
-    (1 << 24, "9K"),
-    (1 << 25, "CO"),
-    (1 << 26, "1K"),
-    (1 << 27, "3K"),
-    (1 << 28, "2K"),
-    (1 << 29, "V2"),
-    (1 << 30, "MR"),
-];
-
 /// A beatmap as the index describes it: what the `.osu` file says, and its own star rating.
 ///
 /// The stars are **no-mod on purpose** — this is the map's rating, the number osu! reports as
@@ -95,6 +52,10 @@ const BITS: [(i32, &str); 31] = [
 pub struct Beatmap {
     pub meta: osu::Beatmap,
     pub stars: f64,
+    /// The map's V1 reference frame, which the recalculation needs for every play on it (§8 step 5a).
+    /// `None` for a convert, whose playable objects are not the ones in the file — its plays get no
+    /// score rather than a wrong one.
+    pub frame: Option<score::Frame>,
 }
 
 /// One play, ready to be written: what the file and its filename said, the map it was set on, and
@@ -125,8 +86,9 @@ pub struct Report {
     pub files: Vec<(String, u64, usize, usize)>,
     /// Plays carrying a `score` — a lazer-era play, whose recorded value already is one.
     pub scored: usize,
-    /// Plays whose `score` waits for the recalculation of step 5a. Reported rather than left as a
-    /// silent null, because a half-filled column is exactly the kind of thing that ships unnoticed.
+    /// Plays whose `score` could not be computed — a lazer-era play with no V1 number to convert, or
+    /// one whose mod multiplier did not resolve. Reported rather than left as a silent null, because a
+    /// half-filled column is exactly the kind of thing that ships unnoticed.
     pub awaiting_score: usize,
 }
 
@@ -253,7 +215,10 @@ fn mode_file(
     // ------------------------------------------------------------------ the plays
     let mut rows = Vec::with_capacity(plays.len());
     for play in plays {
-        let (score, legacy_score) = scores(play);
+        let Some(beatmap_row) = maps.get(play.md5.as_str()) else {
+            return Err("a play's beatmap left the table".to_owned());
+        };
+        let (score, legacy_score) = scores(play, beatmap_row.frame.as_ref());
         if score.is_null() {
             report.awaiting_score += 1;
         } else {
@@ -291,7 +256,7 @@ fn mode_file(
         v: VERSION,
         mode,
         ppver: pp::ROSU_PP,
-        scorever: None,
+        scorever: Some(SCOREVER),
         mods: mods.iter().map(Mods::to_value).collect(),
         beatmaps,
         plays: rows,
@@ -356,40 +321,14 @@ fn mods_of(play: &pp::Play) -> Mods {
 /// bitfield is only `HDDT`. The mod is nowhere in the file, so `CL` is derived from the era and
 /// appended, which makes our spelling match osu!'s instead of omitting Classic from 7,645 rows (§5).
 fn label(play: &pp::Play) -> String {
-    let mut names: Vec<String> = if play.mods_names.is_empty() {
-        BITS.iter()
-            .filter(|(bit, _)| play.mods & bit != 0)
-            .map(|(_, acronym)| (*acronym).to_owned())
-            .collect()
-    } else {
-        play.mods_names.clone()
-    };
+    // The acronyms and their order come from one place, shared with the score recalculation. A second
+    // spelling here would be a second thing to keep in step, and a badge that disagreed with the
+    // multiplier is a bug nobody would ever see.
+    let mut text = score::acronyms(play).concat();
 
-    // osu! carries the mod it implies as well — Nightcore is DoubleTime and Perfect is SuddenDeath —
-    // but shows and returns only the stronger one, so the implied mod leaves the set rather than
-    // being spelled beside it.
-    if names.iter().any(|name| name == NC) {
-        names.retain(|name| name != DT);
-    }
-    if names.iter().any(|name| name == PF) {
-        names.retain(|name| name != SD);
-    }
-
-    let mut text = String::new();
-    for (_, acronym) in BITS {
-        if names.iter().any(|name| name == acronym) {
-            text.push_str(acronym);
-        }
-    }
-    // A mod this table does not know — lazer keeps adding them — is still named, in the order it
-    // arrived, rather than dropped. Dropping it would make a badge quietly wrong, which is the one
-    // outcome worse than an unfamiliar acronym.
-    for name in &names {
-        if !BITS.iter().any(|(_, acronym)| acronym == name) {
-            text.push_str(name);
-        }
-    }
-
+    // Stable *is* Classic and osu!'s API says so, so the label carries it even though the file does
+    // not (§5). It is added **only** here: the multiplier must not see it, because the client never
+    // applied it — which is a question about osu!'s own conversion, not one to answer by accident.
     if !play.lazer() && !text.contains(CL) {
         text.push_str(CL);
     }
@@ -423,13 +362,34 @@ fn settings_of(play: &pp::Play) -> Option<Value> {
 /// standardised score, so it belongs in the `score` column like a lazer-era play. osu! special-cases
 /// exactly this in `ModScoreV2`. **This library has zero such plays**, so nothing here would catch a
 /// mistake — a stranger's might not be so lucky (a ponytail for a later reader, not a bug today).
-fn scores(play: &Play) -> (Value, Value) {
+fn scores(play: &Play, frame: Option<&score::Frame>) -> (Value, Value) {
     let recorded = Value::from(play.recorded);
+
+    // A lazer-era play was *scored* by the standardised system, so `score` is its recorded value and
+    // there was never a V1 number to keep. ScoreV2 in a stable-era file recorded standardised too.
     if play.play.lazer() || play.play.mods & SCORE_V2 != 0 {
-        (recorded, Value::Null)
-    } else {
-        (Value::Null, recorded)
+        return (recorded, Value::Null);
     }
+
+    // Otherwise the recorded value is the V1 one, and `score` is the recalculation. `None` means a
+    // mod's multiplier could not be resolved — a missing score is better than a wrong one.
+    //
+    // The rate is `None` on purpose: only a lazer-era blob records a `speed_change`, and a lazer-era
+    // play is never converted.
+    let Some(frame) = frame else {
+        return (Value::Null, recorded);
+    };
+    let converted = score::convert_osu(
+        frame,
+        play.recorded,
+        play.attributes.accuracy,
+        u32::from(play.play.max_combo),
+        u32::from(play.play.counts[5]),
+        &score::acronyms(&play.play),
+        None,
+    );
+
+    (converted.map_or(Value::Null, Value::from), recorded)
 }
 
 /// The stored letter, as its position in §5's wire order: `XH` 0 through `F` 8.
@@ -578,18 +538,18 @@ mod tests {
     #[test]
     fn exactly_one_score_column_is_filled() {
         // Stable-era: the recorded number is the V1 one, and `score` waits for step 5a.
-        let (score, legacy) = scores(&entry(&play(0, &[], 20_240_102, None)));
+        let (score, legacy) = scores(&entry(&play(0, &[], 20_240_102, None)), None);
         assert_eq!(score, Value::Null);
         assert_eq!(legacy, Value::from(706_543));
 
         // Lazer-era: the recorded number already is standardised, and there was never a V1 value.
-        let (score, legacy) = scores(&entry(&play(0, &[], 30_000_019, None)));
+        let (score, legacy) = scores(&entry(&play(0, &[], 30_000_019, None)), None);
         assert_eq!(score, Value::from(706_543));
         assert_eq!(legacy, Value::Null);
 
         // ScoreV2 in a stable-era file was recorded standardised too, so it moves columns even
         // though the file is stable's. No such play exists in this library.
-        let (score, legacy) = scores(&entry(&play(SCORE_V2, &[], 20_240_102, None)));
+        let (score, legacy) = scores(&entry(&play(SCORE_V2, &[], 20_240_102, None)), None);
         assert_eq!(score, Value::from(706_543));
         assert_eq!(legacy, Value::Null);
     }
@@ -611,6 +571,7 @@ mod tests {
                     version: "Tarrasky's True Love".to_owned(),
                 },
                 stars: 4.54,
+                frame: None,
             },
         )]
         .into_iter()
