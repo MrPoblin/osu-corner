@@ -58,7 +58,7 @@ const VERSION: u32 = 1;
 /// The `mode` byte of an `.osr`, and the file each mode's plays go in. All four are always written,
 /// even when empty: a missing file would 404 the fetch, while an empty one is a mode with no plays
 /// and the browser has to handle that anyway (§6).
-const MODES: [(u8, &str); 4] = [(0, "osu"), (1, "taiko"), (2, "catch"), (3, "mania")];
+pub(crate) const MODES: [(u8, &str); 4] = [(0, "osu"), (1, "taiko"), (2, "catch"), (3, "mania")];
 
 /// osu!'s mod bit for `SV2`. The one thing that moves a stable-era play's recorded score into the
 /// modern column, because under ScoreV2 the client recorded a standardised number (§5).
@@ -98,11 +98,21 @@ pub struct Play {
     /// 8,000 here (§8).
     pub online_id: Option<i64>,
     /// The play key, `(beatmap MD5, score timestamp)`. Used as `score_id` when there is no online
-    /// id, because **this value is also the R2 object key** (§9) — so a play and its replay can
+    /// id, because **this value is also the object key** (§9) — so a play and its replay can
     /// never end up filed under two different names.
     pub key: String,
     /// Unix seconds (§5).
     pub played_at: i64,
+}
+
+impl Play {
+    /// The name this play's replay takes in the store: the online score id when osu! gave one, else the
+    /// play key (§9). One function, so the index's own `score_id` and the uploader cannot disagree
+    /// about what a play is called — they are the same value for the same reason.
+    pub fn object_key(&self) -> String {
+        self.online_id
+            .map_or_else(|| self.key.clone(), |id| id.to_string())
+    }
 }
 
 /// What a run wrote, for the report.
@@ -258,7 +268,7 @@ fn mode_file(
             .ok_or("a play's mods left the table")?;
 
         rows.push(json!([
-            // The online id where osu! has one, else the play key. Both are usable as the R2 object
+            // The online id where osu! has one, else the play key. Both are usable as the object
             // key (§9), which is why one slot carries either.
             play.online_id
                 .map_or_else(|| Value::String(play.key.clone()), Value::from),

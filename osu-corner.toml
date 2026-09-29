@@ -12,11 +12,27 @@ name = "osu! corner"
 # The mount path is not here: it has to be Vite's `base`, so it lives in
 # apps/corner/vite.config.ts, and the route in wrangler.toml must agree with it.
 
-[r2]
-# Where the .osr files are served from, and the bucket they upload to. Both matter only once
-# ingest runs; the bucket must exist and be reachable at `host` first.
-host = ""
+[storage]
+# Where the .osr files and the index are served from, and the bucket they upload to. All of it
+# matters only once ingest runs, and an empty `public_base` or `bucket` means "no bucket yet" — a
+# supported state, not a failure: the objects stay in `library/` and the run reports them as not
+# uploaded.
+#
+# `public_base` is the URL the browser fetches the index and the replays from. It is written into the
+# index header and substituted into the CSP at build time, so this is the only place the value lives.
+public_base = ""
 bucket = ""
+# The **S3 API** endpoint uploads are signed against. Deliberately not `public_base`: one is an API,
+# the other a URL. Any S3-compatible service works — `https://s3.<region>.backblazeb2.com` for
+# Backblaze B2, `https://<account>.r2.cloudflarestorage.com` for Cloudflare R2, or MinIO, Storj,
+# Wasabi. The access key pair is a secret and lives in `.dev.vars`
+# (STORAGE_ACCESS_KEY_ID, STORAGE_SECRET_ACCESS_KEY), never in this file.
+endpoint = ""
+# The **SigV4 region**. `auto` is Cloudflare R2's, and an empty value means `auto`, so a config
+# written before this field existed keeps working. Backblaze B2 wants its own: the middle segment of
+# the endpoint, e.g. `us-west-004` from `s3.us-west-004.backblazeb2.com`. A wrong region fails as a
+# bare `403` with no explanation, which is why this is a value rather than a constant.
+region = ""
 
 [mirrors]
 # Tried in order, for the two things this project does not host: the .osu file and the audio.

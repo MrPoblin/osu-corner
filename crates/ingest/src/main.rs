@@ -1,12 +1,13 @@
 #![forbid(unsafe_code)]
 
-//! Local ingest: the library's game folders in, the working set, index and R2 objects out. Never
+//! Local ingest: the library's game folders in, the working set, index and store objects out. Never
 //! deployed — it reads game installs and writes only inside `library/`.
 //!
 //! Today it builds the working set — the maps a play references, every replay, and the ledger that
-//! makes a re-sync cheap — and writes the index the site reads. Upload to R2 is not implemented yet.
+//! makes a re-sync cheap — and writes the index the site reads. Upload is off until a bucket is configured, and a run without one still succeeds.
 
 mod collect;
+mod devvars;
 mod index;
 mod ledger;
 mod library;
@@ -15,6 +16,7 @@ mod pp;
 #[cfg(test)]
 mod probe;
 mod score;
+mod store;
 
 use serde::Deserialize;
 use std::fs;
@@ -28,7 +30,7 @@ struct Config {
     source: Vec<Source>,
     #[serde(default)]
     user: Vec<User>,
-    r2: R2,
+    storage: Storage,
     mirrors: Mirrors,
 }
 
@@ -65,9 +67,25 @@ struct User {
 }
 
 #[derive(Deserialize)]
-struct R2 {
-    host: String,
+struct Storage {
+    /// The **public base URL** the browser reads the index and the replays from — written into the
+    /// index header and allowed by the CSP. A URL, where `endpoint` below is an API. Empty is a
+    /// supported state: the objects stay in `library/` and are reported as not uploaded.
+    public_base: String,
     bucket: String,
+    /// The **S3 API** endpoint uploads are signed against —
+    /// `https://s3.us-west-004.backblazeb2.com` for Backblaze B2, or
+    /// `https://<account>.r2.cloudflarestorage.com` for Cloudflare R2. Deliberately not
+    /// `public_base`: one is an API, the other a URL. Optional, because a clone with no bucket yet
+    /// is a supported state and a local config written before this field existed must keep parsing.
+    #[serde(default)]
+    endpoint: String,
+    /// The **SigV4 region**. Empty means `auto`, which is R2's — the default exists so a config
+    /// written before this field keeps working. Backblaze B2 wants its own: the middle segment of
+    /// the endpoint, e.g. `us-west-004` from `s3.us-west-004.backblazeb2.com`. A wrong region fails
+    /// as a bare `403` with no explanation, which is exactly why it is not a constant any more.
+    #[serde(default)]
+    region: String,
 }
 
 #[derive(Deserialize)]
@@ -147,12 +165,36 @@ fn main() -> ExitCode {
     }
     println!("  mirrors: {}", config.mirrors.urls.join(", "));
 
-    let r2 = if config.r2.host.is_empty() || config.r2.bucket.is_empty() {
-        "not configured yet".to_owned()
+    let storage = if config.storage.public_base.is_empty() || config.storage.bucket.is_empty() {
+        "serving host not configured yet".to_owned()
     } else {
-        format!("{} / {}", config.r2.host, config.r2.bucket)
+        format!("{} / {}", config.storage.public_base, config.storage.bucket)
     };
-    println!("  R2: {r2}");
+    println!("  storage: {storage}");
+
+    // Built here rather than inside `library::build` so that the reason an upload will not happen
+    // is printed once, before anything runs, instead of surfacing at the end. The credentials come
+    // from `.dev.vars`, the same file the osu! ones live in (§14); their absence is a supported
+    // state rather than a failure, because a clone that has created no bucket yet still has to
+    // complete a run.
+    let bucket = match store::Store::new(
+        &config.storage.endpoint,
+        &config.storage.bucket,
+        &config.storage.region,
+        &devvars::read(&work),
+    ) {
+        Ok(bucket) => {
+            println!(
+                "  storage upload: on — the index and the replays go to {} ({})",
+                bucket.bucket, bucket.region
+            );
+            Some(bucket)
+        }
+        Err(reason) => {
+            println!("  storage upload: off — {reason}, so objects stay in library/");
+            None
+        }
+    };
 
     // Whether a beatmap no install holds can be fetched needs the osu! application's credentials.
     // Absence is a supported state, not a failure — it is what a fresh clone looks like.
@@ -189,7 +231,14 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    match library::build(&enabled, &work, &config.mirrors.urls, fetch_limit, dry_run) {
+    match library::build(
+        &enabled,
+        &work,
+        &config.mirrors.urls,
+        fetch_limit,
+        bucket.as_ref(),
+        dry_run,
+    ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("\n{error}");
@@ -305,7 +354,7 @@ mod tests {
     #[test]
     fn tables_merge_and_arrays_replace() {
         let mut base = parse(
-            "[site]\nname = 'default'\n\n[r2]\nhost = 'h'\nbucket = 'b'\n\n\
+            "[site]\nname = 'default'\n\n[storage]\npublic_base = 'h'\nbucket = 'b'\nendpoint = 'https://api'\nregion = 'us-west-004'\n\n\
              [mirrors]\nurls = ['https://default']\n\n\
              [[source]]\nkind = 'lazer'\npath = '/placeholder'\n",
         );
@@ -320,8 +369,16 @@ mod tests {
             .expect("merged table must deserialize");
 
         assert_eq!(config.site.name, "mine", "a scalar is replaced");
-        assert_eq!(config.r2.host, "h", "an untouched sibling table survives");
-        assert_eq!(config.r2.bucket, "b");
+        assert_eq!(
+            config.storage.public_base, "h",
+            "an untouched sibling table survives"
+        );
+        assert_eq!(config.storage.bucket, "b");
+        assert_eq!(config.storage.endpoint, "https://api");
+        assert_eq!(
+            config.storage.region, "us-west-004",
+            "the signed region survives"
+        );
         assert_eq!(
             config.mirrors.urls,
             vec!["https://default"],
@@ -332,18 +389,24 @@ mod tests {
         assert_eq!(config.source[0].kind, SourceKind::Stable);
     }
 
-    /// `enabled` is the one field with a default, and it has to default to on: naming a source
-    /// and leaving the switch out means you meant it.
+    /// `enabled`, `storage.endpoint` and `storage.region` are the fields with a default, and each has to have
+    /// the one that keeps an older or minimal config working: naming a source and leaving the switch
+    /// out means you meant it, a config written before the endpoint existed must still parse, and a
+    /// config written before the region existed must sign as `auto` rather than fail.
     #[test]
     fn a_source_without_the_switch_is_enabled() {
         let config: Config = toml::from_str(
-            "[site]\nname = 'x'\n[r2]\nhost = ''\nbucket = ''\n[mirrors]\nurls = []\n\
+            "[site]\nname = 'x'\n[storage]\npublic_base = ''\nbucket = ''\n[mirrors]\nurls = []\n\
              [[source]]\nkind = 'lazer'\npath = '/tmp/x'\n",
         )
         .expect("minimal config must parse");
 
         assert!(config.source[0].enabled);
         assert_eq!(config.source[0].kind, SourceKind::Lazer);
+        assert_eq!(
+            config.storage.region, "",
+            "an absent region stays empty, which signs as `auto`"
+        );
     }
 
     #[test]

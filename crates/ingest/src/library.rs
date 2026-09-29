@@ -20,7 +20,7 @@ use crate::collect::{self, Known};
 use crate::ledger::{Blob, Kind, Ledger};
 use crate::mirror::{Fetched, Fetcher};
 use crate::{Source, SourceKind};
-use crate::{index, pp};
+use crate::{index, pp, store};
 use osu_core::{osr, osu};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -38,7 +38,7 @@ const ASKED_SOURCE: &str = "osu-api";
 /// The identity is carried alongside the pricing inputs rather than recovered later, because the
 /// filename is the only place the played time exists and the ledger's rows do not survive to here.
 struct Staged {
-    /// `(beatmap MD5, score timestamp)` — the play key, and the R2 object key when osu! never gave
+    /// `(beatmap MD5, score timestamp)` — the play key, and the object key when osu! never gave
     /// this play an id.
     key: String,
     /// The `.osr`'s recorded total. Which of the index's two score columns it belongs in is decided
@@ -54,6 +54,7 @@ pub fn build(
     work: &Path,
     mirrors: &[String],
     limit: usize,
+    bucket: Option<&store::Store>,
     dry_run: bool,
 ) -> Result<(), String> {
     let roots = collect::roots(sources);
@@ -91,6 +92,9 @@ pub fn build(
 
     for source in sources {
         let key = source.path.display().to_string();
+        // Registered before it is read: `blob` addresses a source by an integer, which is what stops
+        // the same absolute path being stored on all 175,000 rows (§10).
+        ledger.register(&key)?;
         let known: Known = ledger.known(&key)?;
         let started = Instant::now();
 
@@ -187,7 +191,10 @@ pub fn build(
     // a 7-second run into an hour. The `osu-api` source is a ledger source like any other, so a
     // run that wants to ask again deletes `state.db`.
 
-    let already_asked = ledger.known(ASKED_SOURCE)?;
+    let already_asked = {
+        ledger.register(ASKED_SOURCE)?;
+        ledger.known(ASKED_SOURCE)?
+    };
     let mut fetched = 0u64;
     // Seeded from the ledger, not just from this run: "osu! does not know this one" is a recorded
     // answer, so a later run must still report it. Collecting only this run's results made the
@@ -459,6 +466,32 @@ pub fn build(
         "  {:<17}{:>6} plays converted, {:>6} could not be (see the score column)",
         "score", report.scored, report.awaiting_score
     );
+
+    // ------------------------------------------------------------------- store
+    //
+    // After the index, and in the same step as the replays it names, so an index can never point
+    // at an object the bucket does not have (§9). `None` is no store being configured, which is a
+    // supported state rather than a failure (§14) — the line above the run's output says why.
+    let uploaded = {
+        let objects: Vec<(String, String)> = indexed
+            .iter()
+            .map(|play| (play.key.clone(), play.object_key()))
+            .collect();
+        store::upload(&mut ledger, work, &objects, bucket, dry_run)?
+    };
+    if let Some(uploaded) = &uploaded {
+        println!(
+            "  {:<17}{:>6} uploaded, {:>6} already there   {:>6.0} KB",
+            if dry_run { "would upload" } else { "store" },
+            uploaded.replays + uploaded.index,
+            uploaded.replays_skipped + uploaded.index_skipped,
+            uploaded.bytes as f64 / 1024.0
+        );
+        println!(
+            "  {:<17}{:>6} index files, {:>6} replays",
+            "", uploaded.index, uploaded.replays
+        );
+    }
 
     // ----------------------------------------------------------------- report
 

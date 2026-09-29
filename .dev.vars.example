@@ -4,3 +4,18 @@
 # Register at https://osu.ppy.sh/home/account/edit — client credentials, callback URL empty.
 OSU_CLIENT_ID=
 OSU_CLIENT_SECRET=
+
+# The storage credentials, read by `osu-ingest` only — the Worker never sees them. They belong to
+# whichever S3-compatible service `[storage]` names in osu-corner.local.toml, so the names are
+# generic rather than the provider's. Create them at the provider:
+#
+#   Backblaze B2   Account → Application Keys → Add a New Application Key, scoped to the bucket,
+#                  with Read and Write. "keyID" is the id, "applicationKey" the secret.
+#   Cloudflare R2  R2 → Manage API tokens (Object Read & Write, scoped to the bucket).
+#
+# There is no account id here: it is already part of `storage.endpoint`.
+#
+# Without these the run still succeeds: the index and the replays stay in `library/` and are reported
+# as not uploaded, which is what a clone with no bucket yet looks like.
+STORAGE_ACCESS_KEY_ID=
+STORAGE_SECRET_ACCESS_KEY=

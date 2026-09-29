@@ -13,6 +13,21 @@ pub mod grade;
 pub mod osr;
 pub mod osu;
 
+/// Bytes as lowercase hex — how every osu! identity is written down: a beatmap MD5, a `.osr`
+/// filename's first half, a store hash. Here rather than beside any one caller because three of
+/// them need it: the MD5 below, the ingest ledger's encoding, and the SigV4 signature the ingest
+/// signs an upload with.
+pub fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        // Writing into a `String` cannot fail; the `Result` is for writers that can.
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
 /// Enough bytes to recognise any file type this project cares about; a `.osr` header needs 40 to
 /// reach its replay hash. One read of 64 bytes is one page and settles every case.
 pub const HEAD_LEN: usize = 64;

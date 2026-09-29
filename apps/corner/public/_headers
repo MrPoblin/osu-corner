@@ -10,14 +10,23 @@
 #     The .osu file and the audio, which this project does not host. Must match
 #     [mirrors] in osu-corner.toml.
 #
-#   The R2 host for the .osr files is NOT listed yet — it is unknown until the bucket exists,
-#   and it will need adding to both connect-src and media-src when it does.
+#   connect-src / media-src __STORAGE_ORIGIN__
+#     The replay `.osr` files and the index, fetched by the browser straight from the bucket's own
+#     hostname rather than through a Worker, so a replay view is a CDN read and not an invocation
+#     (§9). The hostname is deliberately NOT written here: this file is committed and the host is
+#     per-deployment, so it is injected at build time from `storage.public_base` in the config by
+#     tools/hoist-headers.mjs. A clone must not inherit somebody else's hostname (§14).
+#
+#     An empty `storage.public_base` removes the entry rather than leaving a broken one, which is
+#     the right policy for a deployment serving the replays as its own static assets. Wrong either
+#     way it fails SILENTLY — a blocked fetch looks like a rendering bug, not a policy problem —
+#     so the build prints what it injected and says so when it injected nothing.
 #
 # style-src 'unsafe-inline' is kept: removing it blocks inline style, which React style props
 # rely on. HSTS omits `preload` deliberately — submission is effectively irreversible.
 
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://assets.ppy.sh; font-src 'self'; connect-src 'self' https://osu.direct https://catboy.best; media-src 'self' https://osu.direct https://catboy.best; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://assets.ppy.sh; font-src 'self'; connect-src 'self' https://osu.direct https://catboy.best __STORAGE_ORIGIN__; media-src 'self' https://osu.direct https://catboy.best __STORAGE_ORIGIN__; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()

@@ -13,6 +13,9 @@ rosu-map = "0.2.1"
 rosu-mods = { version = "0.4.1", features = ["serde"] }
 rosu-pp = "4.0.1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# SigV4 for the R2 upload (`r2.rs`). Both RustCrypto, neither with C.
+hmac = "0.12"
+sha2 = "0.10"
 serde.workspace = true
 serde_json.workspace = true
 toml = "1"

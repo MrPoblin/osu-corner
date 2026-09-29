@@ -26,15 +26,7 @@ use md5::{Digest, Md5};
 pub fn md5(bytes: &[u8]) -> String {
     let mut hasher = Md5::new();
     hasher.update(bytes);
-    let digest = hasher.finalize();
-
-    let mut out = String::with_capacity(32);
-    for byte in digest {
-        use std::fmt::Write;
-        // Writing to a String cannot fail; the Result is for writers that can.
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
+    crate::hex(&hasher.finalize())
 }
 
 /// What the index needs out of a beatmap. Everything else in the file is either duplication or
