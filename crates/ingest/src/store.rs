@@ -103,21 +103,13 @@ impl Store {
     }
 
     /// Sign one `PUT` and send it. The body is the object exactly as it will be stored.
+    ///
+    /// **A transient failure is retried here rather than ending the run.** A full upload is ~8,000
+    /// objects over a home connection, so meeting a `500`, a `503` or a reset socket is expected, not
+    /// exceptional — and without a retry the first one aborts the run with 7,000 objects still to go.
+    /// Only failures the service is *telling* us are temporary are retried: a `403` from a wrong
+    /// region or a `404` is a mistake, and repeating it would just spend the same seconds again.
     fn put(&self, object: &str, body: &[u8]) -> Result<(), String> {
-        let (date, amz_date) = stamps();
-        let signed = sign(
-            &self.access_key_id,
-            &self.secret_access_key,
-            &self.region,
-            SERVICE,
-            &self.host,
-            &self.bucket,
-            object,
-            body,
-            &date,
-            &amz_date,
-        );
-
         let url = format!(
             "{}/{}/{}",
             self.endpoint,
@@ -125,23 +117,83 @@ impl Store {
             uri_encode(object, false)
         );
 
-        self.agent
-            .put(&url)
-            .header("authorization", &signed.authorization)
-            .header("x-amz-date", &amz_date)
-            .header("x-amz-content-sha256", &signed.payload_hash)
-            .header("content-type", "application/octet-stream")
-            // **Object keys are content-addressed and immutable, so say so.** A replay is never
-            // rewritten under the same name, which is what makes a year-long immutable cache honest
-            // — and it matters beyond speed: an edge cache HIT never reaches the store at all, so a repeat
-            // or abusive request for an object already cached costs **no Class B operation**. That is
-            // the cheapest abuse mitigation this project has, and it only works if the cache is
-            // allowed to hold the bytes. This does *not* retroactively apply to objects already
-            // uploaded without it, so the zone's cache rule must set its own edge TTL.
-            .header("cache-control", "public, max-age=31536000, immutable")
-            .send(body)
-            .map(|_| ())
-            .map_err(|error| format!("uploading {object}: {error}"))
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+
+            // Re-signed per attempt rather than reused, because the signature covers the timestamp
+            // and a stale one is a `403` that says nothing about why.
+            let (date, amz_date) = stamps();
+            let signed = sign(
+                &self.access_key_id,
+                &self.secret_access_key,
+                &self.region,
+                SERVICE,
+                &self.host,
+                &self.bucket,
+                object,
+                body,
+                &date,
+                &amz_date,
+            );
+
+            let sent = self
+                .agent
+                .put(&url)
+                .header("authorization", &signed.authorization)
+                .header("x-amz-date", &amz_date)
+                .header("x-amz-content-sha256", &signed.payload_hash)
+                .header("content-type", "application/octet-stream")
+                // **Object keys are content-addressed and immutable, so say so.** A replay is never
+                // rewritten under the same name, which is what makes a year-long immutable cache honest
+                // — and it matters beyond speed: an edge cache HIT never reaches the store at all, so a repeat
+                // or abusive request for an object already cached costs **no Class B operation**. That is
+                // the cheapest abuse mitigation this project has, and it only works if the cache is
+                // allowed to hold the bytes. This does *not* retroactively apply to objects already
+                // uploaded without it, so the zone's cache rule must set its own edge TTL.
+                .header("cache-control", "public, max-age=31536000, immutable")
+                .send(body);
+
+            match sent {
+                Ok(_) => return Ok(()),
+                Err(error) if attempt < ATTEMPTS && transient(&error) => {
+                    let wait = backoff(attempt);
+                    println!(
+                        "  retrying {object} in {}s ({attempt}/{ATTEMPTS}): {error}",
+                        wait.as_secs()
+                    );
+                    std::thread::sleep(wait);
+                }
+                Err(error) => return Err(format!("uploading {object}: {error}")),
+            }
+        }
+    }
+}
+
+/// How many times one object is attempted before the run gives up on it. Five attempts with the
+/// backoff below is a little over two minutes of patience per object, which covers a service blip
+/// without turning a genuinely broken request into an hour of silence.
+const ATTEMPTS: u32 = 5;
+
+/// The wait before attempt `n`+1: 1 s, 2 s, 4 s, 8 s.
+fn backoff(attempt: u32) -> Duration {
+    Duration::from_secs(1 << (attempt - 1))
+}
+
+/// Whether an error is worth trying again.
+///
+/// `StatusCode` covers what the service says is temporary — `5xx` and the `429`/`503` family. The
+/// transport arms cover a socket that died or a timeout, which is the same class of accident. `Error`
+/// is `#[non_exhaustive]`, so the final arm is a deliberate "anything else is a mistake": a bad URL,
+/// a hostname that does not resolve, too many redirects. Retrying those only delays the report.
+fn transient(error: &ureq::Error) -> bool {
+    match error {
+        ureq::Error::StatusCode(code) => *code >= 500 || *code == 429,
+        ureq::Error::Io(_)
+        | ureq::Error::Timeout(_)
+        | ureq::Error::ConnectionFailed
+        | ureq::Error::Protocol(_) => true,
+        _ => false,
     }
 }
 
@@ -606,6 +658,38 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A retry that fires on a mistake is worse than having none: it delays the real error by the
+    /// whole backoff, and across 8,000 objects that is hours. So the classification is pinned here
+    /// rather than left to be read off the match arms.
+    #[test]
+    fn only_failures_the_service_calls_temporary_are_retried() {
+        for code in [500, 502, 503, 504, 429] {
+            assert!(
+                transient(&ureq::Error::StatusCode(code)),
+                "{code} is temporary"
+            );
+        }
+        for code in [400, 403, 404, 409] {
+            assert!(
+                !transient(&ureq::Error::StatusCode(code)),
+                "{code} is a mistake"
+            );
+        }
+
+        assert!(transient(&ureq::Error::Io(std::io::Error::other(
+            "connection reset"
+        ))));
+        assert!(transient(&ureq::Error::ConnectionFailed));
+        assert!(!transient(&ureq::Error::HostNotFound));
+
+        assert_eq!(
+            backoff(1).as_secs(),
+            1,
+            "1, 2, 4, 8 — and ATTEMPTS covers all four"
+        );
+        assert_eq!(backoff(4).as_secs(), 8);
     }
 
     /// A replay the index names but the working set does not hold is a real inconsistency, and it
