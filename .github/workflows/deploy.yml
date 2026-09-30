@@ -1,0 +1,110 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege: this job writes to Cloudflare, never to the repository.
+permissions:
+  contents: read
+
+# Never cancel a deploy already in flight. A half-applied deploy is worse than a
+# queued one, so this waits rather than interrupts.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    # Declaring the environment means protection rules (required reviewers, scoped
+    # secrets) can be attached later without editing this file. Repository secrets
+    # are visible here either way.
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # `rust-toolchain.toml` pins the compiler and declares the components and the wasm target,
+      # so `rustup show` installs all of it and no third-party Rust setup action is needed.
+      - name: Install toolchain
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # This is what makes the deploy job minutes instead of seconds, and it is not avoidable: the
+      # Worker's entry module is Rust, so the wasm has to exist before `wrangler deploy` runs or the
+      # deploy ships a stale or missing module. The cargo cache above is what keeps it tolerable.
+      - name: Install worker-build
+        run: cargo install worker-build --version 0.8.6 --locked
+
+      - name: Typecheck
+        run: pnpm check
+
+      # The CSP's storage host is the one thing the build cannot work out for itself: `_headers`
+      # carries a `__STORAGE_ORIGIN__` placeholder and `tools/hoist-headers.mjs` fills it from
+      # `storage.public_base`. In CI there is no gitignored local config, so without this the
+      # committed empty default wins and the built CSP silently omits the host — and a missing CSP
+      # entry does not error, the fetch simply never happens.
+      #
+      # A repository **variable**, not a secret: it is a public URL, and it is already visible in
+      # the CSP it produces. Left unset, the build correctly omits the host, which is the right
+      # state for a clone serving its replays as its own static assets.
+      - name: Materialise the storage origin
+        if: vars.STORAGE_PUBLIC_BASE != ''
+        env:
+          STORAGE_PUBLIC_BASE: ${{ vars.STORAGE_PUBLIC_BASE }}
+        run: printf '[storage]\npublic_base = "%s"\n' "$STORAGE_PUBLIC_BASE" > osu-corner.local.toml
+
+      - name: Build
+        run: pnpm build
+
+      # The build prints the origin it found, but printing is not checking.
+      - name: The CSP carries the storage host
+        if: vars.STORAGE_PUBLIC_BASE != ''
+        env:
+          STORAGE_PUBLIC_BASE: ${{ vars.STORAGE_PUBLIC_BASE }}
+        run: grep -qF "$STORAGE_PUBLIC_BASE" apps/corner/dist/_headers
+
+      # `GIT_SHA` reaches the bundle through `option_env!` in the health handler, so a deploy can be
+      # confirmed from outside against the SHA that triggered it.
+      - name: Build worker to wasm
+        run: worker-build --release
+        working-directory: crates/worker
+        env:
+          GIT_SHA: ${{ github.sha }}
+
+      # wrangler is an exactly-pinned devDependency, so this uses the version in pnpm-lock.yaml
+      # rather than an action carrying its own separate pin. The Worker's own secrets
+      # (OSU_CLIENT_ID, OSU_CLIENT_SECRET, OSU_PROFILE_USER) are set once with `wrangler secret put`
+      # and survive every deploy, so CI never handles them and there is no GitHub secret for them.
+      - name: Deploy
+        run: pnpm exec wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

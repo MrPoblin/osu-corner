@@ -9,3 +9,8 @@ publish = false
 # Stays empty on purpose: a dependency here means the code belongs in an adapter crate
 # instead. In particular this crate must never depend on `worker` — see the crate docs.
 [dependencies]
+
+# Test-only, and it must stay test-only: the point of this crate is that it has no runtime. This is
+# a `block_on` and nothing else, so the async tests need no executor, no wasm and no network.
+[dev-dependencies]
+pollster = "0.4"

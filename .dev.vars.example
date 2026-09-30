@@ -5,6 +5,12 @@
 OSU_CLIENT_ID=
 OSU_CLIENT_SECRET=
 
+# Whose profile `/api/osu` serves. An osu! user id, or `@`-prefixed username — the same value as
+# `[[user]] id` in osu-corner.local.toml, which is what ingest reads. The Worker has no TOML reader,
+# so its config arrives as variables and this is how that one crosses over. Setting it as a Worker
+# secret keeps it out of the repository, and the route reports `unconfigured` when it is missing.
+OSU_PROFILE_USER=
+
 # The storage credentials, read by `osu-ingest` only — the Worker never sees them. They belong to
 # whichever S3-compatible service `[storage]` names in osu-corner.local.toml, so the names are
 # generic rather than the provider's. Create them at the provider:

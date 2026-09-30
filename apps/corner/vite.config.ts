@@ -33,5 +33,13 @@ export default defineConfig({
     host: true,
     port: 5179,
     open: false,
+    // The profile route, proxied to a locally running `wrangler dev` rather than to any deployed
+    // host. A hostname here would be one contributor's URL baked into a repository other people
+    // clone; `127.0.0.1` is nobody's. `wrangler dev` reads `.dev.vars`, so the data is real — a
+    // live osu! response through the same Worker and the same Cache API — with no deploy.
+    //
+    // Only the API is proxied. The index is served from `public/` under the base, so its URL is
+    // identical in dev and in production.
+    proxy: { "/api": "http://127.0.0.1:8787" },
   },
 });

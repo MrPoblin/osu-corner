@@ -95,8 +95,11 @@ jobs:
       - name: Clippy (worker, wasm32)
         run: cargo clippy -p osu-worker --target wasm32-unknown-unknown -- -D warnings
 
+      # `osu-worker` is tested on the host even though it builds for wasm32: its projection is the
+      # allowlist, and a test that never runs is how a leak ships. The wasm build is covered by the
+      # lint and build steps below.
       - name: Test
-        run: cargo test -p corner-core -p osu-core -p osu-ingest
+        run: cargo test -p corner-core -p osu-core -p osu-worker -p osu-ingest
 
       - name: Install worker-build
         run: cargo install worker-build --version 0.8.6 --locked
