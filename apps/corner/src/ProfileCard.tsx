@@ -68,6 +68,14 @@ export function ProfileCard({ mode }: { mode: string }) {
   // to link to, so the picture is left as a picture rather than a link to `users/undefined`.
   const osuProfile = typeof id === "number" ? `https://osu.ppy.sh/users/${id}` : null;
 
+  /*
+   * How big the name is drawn, read off its own length: a card cannot know how long a name will be, and a long
+   * one would wrap and push the facts down. Three steps, applied at every width — the phone multiplies a smaller
+   * base by the same numbers.
+   */
+  const nameScale =
+    username.length > 24 ? 0.55 : username.length > 16 ? 0.7 : username.length > 10 ? 0.85 : 1;
+
   const avatar = (
     <>
       <img src={avatar_url} alt="" width={104} height={104} className="avatar" />
@@ -104,7 +112,7 @@ export function ProfileCard({ mode }: { mode: string }) {
         )}
 
         <div className="profile__name">
-          <h2 className="username">{username}</h2>
+          <h2 className="username" style={{ "--name-scale": nameScale } as React.CSSProperties}>{username}</h2>
 
           {/* A two-letter code is a shortened name, so the card spells it out. */}
           <Tip pop={<b>{countryName(country_code)}</b>}>
@@ -120,42 +128,31 @@ export function ProfileCard({ mode }: { mode: string }) {
             </Tip>
           </p>
 
-          <div className="flex flex-wrap items-start gap-2">
+          <div className="grade-stats">
               {BADGES.map(({ key, grade }) => (
-                /* The two letters cannot say whether the grade was visibility-modified, so the card does. */
-                <Tip
-                  key={key}
-                  pop={
-                    <>
-                      <b>
-                        {formatNumber(statistics.grade_counts[key])} × {grade.letter}
-                      </b>
-                      <span>
-                        {grade.hidden ? "visibility modified (Hidden or Flashlight)" : "no visibility mods"}
-                      </span>
-                    </>
-                  }
-                >
-                  <span className="grade-stat">
-                    {/* The pill carries the grade colour; the ink says whether it was visibility-modified. */}
-                    <span
-                      className="grade-pill"
-                      style={{ backgroundColor: grade.colour, color: grade.ink }}
-                    >
-                      {grade.letter}
-                    </span>
-                    <span className="grade-stat__count">
-                      {formatNumber(statistics.grade_counts[key])}
-                    </span>
+                <span key={key} className="grade-stat">
+                  {/* The pill carries the grade colour; the ink says whether it was visibility-modified,
+                      and the count underneath says how many. No card: it repeated all three. */}
+                  <span
+                    className="grade-pill"
+                    style={{ backgroundColor: grade.colour, color: grade.ink }}
+                  >
+                    {grade.letter}
                   </span>
-                </Tip>
+                  <span className="grade-stat__count">
+                    {formatNumber(statistics.grade_counts[key])}
+                  </span>
+                </span>
               ))}
           </div>
         </div>
       </div>
 
       <div className="panel profile__stats">
-        <dl className="flex flex-wrap items-start gap-x-10 gap-y-5">
+        {/* No utility classes here: `flex-wrap` and the gaps are the stylesheet's, and Tailwind's utilities
+            win over it by layer regardless of specificity — which is why the mobile rule that puts the four
+            figures on one line had no effect at all. */}
+        <dl>
           <Stat label="performance">
             <span className="text-[var(--accent)]">{formatNumber(statistics.pp)}</span>
             <span className="ml-1 text-[0.78rem] text-[var(--color-dim)]">pp</span>

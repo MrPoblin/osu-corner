@@ -119,7 +119,7 @@
     inset: -12%;
     background-position: center;
     background-size: cover;
-    filter: blur(40px) saturate(1.6) brightness(0.72);
+    filter: blur(26px) saturate(1.6) brightness(0.72);
     opacity: 0;
     transition: opacity 620ms var(--ease-out);
     /*
@@ -189,7 +189,8 @@
       transform: translate3d(0, 0, 0);
     }
     to {
-      transform: translate3d(0, -340px, 0);
+      /* Equals `DRIFTING.height` in `Triangles.tsx`. */
+      transform: translate3d(0, -520px, 0);
     }
   }
 
@@ -241,6 +242,19 @@
     position: relative;
     z-index: 1;
     animation: reveal-clip 480ms var(--ease-out) 60ms both;
+  }
+
+  /*
+   * **Let go of the clip once it has landed.** Finishing is not enough: `both` fills the animation
+   * forward, so the page root keeps a live `clip-path` for the rest of the session — and Firefox re-clips
+   * the whole page on the CPU in every frame that anything inside it moves. Measured 116% of a core with
+   * the row meshes drifting, against 0% with this rule. Chrome composites the clip, which is why it only
+   * ever hurt in Firefox.
+   *
+   * The animation's end state is already "no clip", so dropping it looks identical.
+   */
+  .reveal[data-revealed] {
+    animation: none;
   }
 
   @keyframes reveal-clip {
@@ -398,17 +412,10 @@
    * filled the width — a whole row of vertical space for four words.
    */
   .toolbar {
-    display: grid;
-    /*
-     * `minmax(0, 1fr)`, not an implicit `auto`: an auto grid column is sized to its widest child's
-     * **max-content**, so the toolbar grew past its container instead of wrapping inside it and pushed
-     * the whole page 144px wide on a phone.
-     *
-     * The second column holds the count, so the count can never take a line of its own.
-     */
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
   }
 
   .toolbar__row {
@@ -428,8 +435,6 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px 16px;
-    grid-column: 1 / -1;
-    grid-row: 2;
     min-width: 0;
   }
 
@@ -453,15 +458,31 @@
     text-transform: uppercase;
   }
 
+  /* The mod chips are already on the page at this width, so only a phone shows the toggle. */
+  .mods-toggle {
+    display: none;
+  }
+
   .count {
-    grid-column: 2;
-    grid-row: 1;
-    justify-self: end;
     white-space: nowrap;
     font-family: var(--font-display);
     font-size: 0.8rem;
     font-weight: 600;
     color: var(--color-dim);
+  }
+
+  /*
+   * The count is the last item of the search box's line and `margin-left: auto` parks it at that line's right
+   * end, wherever the line ends. It is **not** a column of the toolbar: as a column it reserved its own width
+   * beside every control above it, which is what squeezed the search box on a phone.
+   *
+   * `order: 1` sends it past the control groups so a desktop keeps it at the far right of the controls line;
+   * the phone block puts it back in place, right after the day picker, where it fills that short line instead
+   * of taking a line of its own.
+   */
+  .toolbar .count {
+    order: 1;
+    margin-left: auto;
   }
 
   /* -------------------------------------------------------------------------------------------
@@ -470,6 +491,38 @@
 
   .daypicker {
     position: relative;
+    /*
+     * One control, three sections. They used to be three separate buttons with a gap between them, which read
+     * as three unrelated things and spent width on a phone. The same background now runs through all three, a
+     * hairline divides them and only the outer corners are rounded — one pill you can point at.
+     *
+     * No `overflow: hidden`: the calendar panel has to escape the box.
+     */
+    display: inline-flex;
+    align-items: stretch;
+    height: 32px;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    background-color: var(--color-panel-strong);
+  }
+
+  .daypicker > .control {
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+    background-color: transparent;
+  }
+
+  .daypicker > .control + .control {
+    border-left: 1px solid var(--color-line);
+  }
+
+  .daypicker > .control:first-child {
+    border-radius: calc(var(--radius-md) - 1px) 0 0 calc(var(--radius-md) - 1px);
+  }
+
+  .daypicker > .control:last-of-type {
+    border-radius: 0 calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0;
   }
 
   .daypicker__panel {
@@ -621,7 +674,7 @@
      * each play's mod count and pushed the stars, accuracy and pp to a different x on every row,
      * which is exactly what "the positioning is still shit" was.
      */
-    grid-template-columns: 68px minmax(0, 1fr) 152px 60px 64px 116px;
+    grid-template-columns: 46px minmax(0, 1fr) 152px 60px 64px 116px;
     align-items: center;
     column-gap: 12px;
     width: 100%;
@@ -635,6 +688,110 @@
       transform 260ms var(--ease-pop),
       border-color 220ms var(--ease-out),
       box-shadow 220ms var(--ease-out);
+  }
+
+  /*
+   * The in-game mesh: every score row carries its own, in that difficulty's star colour, drifting.
+   *
+   * **No masks anywhere in this.** Firefox applies a mask on the CPU, and anything masked that also
+   * animates is re-masked every frame — seventeen of these put a real machine at half a core while Chrome
+   * barely noticed. So the colour is drawn into the tile (`meshTile`) and the fade is a gradient *over* the
+   * top rather than a mask on the container. What is left is a background image sliding under a transform,
+   * which is the shape of the one animation on this page that was always cheap.
+   */
+  .row__mesh {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  /*
+   * The fade, as a cover rather than a mask. Its end colour is the row's own background, so the mesh
+   * dissolves into the row instead of into a second colour.
+   */
+  .row__mesh::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: linear-gradient(
+      to bottom,
+      transparent 34%,
+      color-mix(in oklab, var(--star) 14%, var(--color-panel)) 100%
+    );
+  }
+
+  .row__mesh__tile {
+    position: absolute;
+    inset: 0 0 auto 0;
+    /* Taller than the row by one tile, so the pass is seamless with nothing to duplicate. */
+    height: calc(100% + 250px);
+    background-image: var(--tri-mesh);
+    background-size: 1200px 250px;
+    background-repeat: repeat;
+    opacity: 0.45;
+    /*
+     * Every row drifts, which is the in-game look. That looked unaffordable until the cost was pinned on
+     * the page root's `clip-path` instead of on these layers — see `.reveal[data-revealed]`.
+     */
+    animation: row-mesh-drift 34s linear infinite;
+    /* A negative delay is a phase offset, so neighbours are not in lockstep. */
+    animation-delay: calc(var(--row-i, 0) * -2.9s);
+  }
+
+  [data-mesh="still"] .row__mesh__tile {
+    animation: none;
+  }
+
+  /* The literal must equal `MESH.height` in `Triangles.tsx`: a `var()` read in a keyframe is
+     animation-tainted and animates nothing. */
+  @keyframes row-mesh-drift {
+    to {
+      /* Equals `MESH.height` in `Triangles.tsx`. */
+      transform: translateY(-250px);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .row__mesh__tile {
+      animation: none;
+    }
+  }
+
+  /*
+   * The white wash: it **flashes** as a row becomes the selected one and then settles, slightly whiter,
+   * for as long as it is. `both` is what leaves it at the end keyframe instead of snapping back.
+   *
+   * Long and shallow on purpose: at 340ms the whole list strobing as the pointer travelled down it was
+   * the effect rather than the selection. 800ms reads as a lift, and the resting value is what stays.
+   *
+   * Driven by `data-selected`, not `:hover`, so the keyboard gets the same response as the pointer.
+   */
+  .row::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background-color: #fff;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .row[data-selected="true"]::after {
+    animation: row-flash 800ms var(--ease-out) both;
+  }
+
+  @keyframes row-flash {
+    from {
+      opacity: 0.13;
+    }
+
+    to {
+      opacity: 0.075;
+    }
   }
 
   /* Keyboard selection is not given a colour or a glow: the row under the pointer is the one that
@@ -671,11 +828,56 @@
    * raised `H`, which is not a thing osu! does.
    */
 
+  /*
+   * The grade owns the row's left end. The colour runs the full height and its right edge **follows the row's
+   * own corner**: straight down the middle where the row's edge is straight, curving away with the row's own
+   * radius at the top and bottom where the row's corners curve. So the colour is widest at the very top and
+   * bottom and the row sits inside it — that is lazer's shape, and it is `--radius-md`, not a bow across the
+   * whole height (which made a blob) and not a disc (which made a ball).
+   *
+   * Two 17px corner pieces, not a `mask-image`: a mask would be re-applied on the CPU by Firefox every frame
+   * the row transforms, and these are anchored to the top and bottom so they don't care how tall the band is.
+   * The colour arrives as `--grade` because a gradient's opaque stop can't read `background-color`.
+   *
+   * `padding-right` is the flare width, so the letter centres on the **straight** part of the colour — the part
+   * the eye reads as the middle. Centring it on the box instead (which includes the flare) pushed it right,
+   * which is why it looked off. The letter itself is untouched at 1.72rem.
+   */
+  /*
+   * The grade owns the row's left end: the full height, its right edge **following the row's own corner** —
+   * straight down the middle, curving away with the row's radius at the top and bottom, so the colour is widest at
+   * the ends and the row sits inside it. That is lazer's shape.
+   *
+   * The shape is a **mask over one flat fill**, not a fill plus painted corners. Painting the flare as two corner
+   * pieces left a seam where each met the band: two edges that are mathematically adjacent still land on different
+   * device pixels, so a hairline of the row showed through between them. A mask cuts the one fill, so there is no
+   * join to see.
+   *
+   * `padding-right` is the flare width, so the letter centres on the straight column — the part the eye reads as
+   * the middle — rather than on the box, which includes the flare. The letter itself is untouched at 1.72rem.
+   */
   .row__grade {
+    /*
+     * The shape, as one path: full width along the top, an arc of the row's own radius (17) in to x=29, straight
+     * down, and the mirror at the bottom. A variable so the prefixed and unprefixed masks cannot drift apart.
+     * `preserveAspectRatio="none"` because the 46x84 box is stretched to the band's own height.
+     */
+    --grade-shape: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 46 84' preserveAspectRatio='none'%3E%3Cpath d='M0 0H46A17 17 0 0 0 29 17V67A17 17 0 0 0 46 84H0Z' fill='%23fff'/%3E%3C/svg%3E");
+
+    position: relative;
     display: grid;
     place-items: center;
     align-self: stretch;
-    width: 68px;
+    box-sizing: border-box;
+    width: 46px;
+    padding-right: 17px;
+    background-color: var(--grade);
+    mask-image: var(--grade-shape);
+    mask-size: 100% 100%;
+    mask-repeat: no-repeat;
+    -webkit-mask-image: var(--grade-shape);
+    -webkit-mask-size: 100% 100%;
+    -webkit-mask-repeat: no-repeat;
     border-radius: calc(var(--radius-md) - 1px) 0 0 calc(var(--radius-md) - 1px);
     font-family: var(--font-display);
     font-size: 1.72rem;
@@ -966,6 +1168,12 @@
     min-width: 0;
   }
 
+  /* The stars sit in a fixed column but the trigger must hug the figure, or the card anchors to the
+     column's edge instead of the number. */
+  .tip--stars {
+    justify-self: start;
+  }
+
   /* A trigger that *is* the grid item — the pp block. The card has to sit outside the block itself,
      because `clip-path` clips descendants and the block's chevron is a clip-path. */
   .tip--stretch {
@@ -1025,23 +1233,31 @@
    * the whole panel was the wrong reading and was reverted; the reference layout is this one.
    */
   /*
-   * Three rows: an empty `1fr` spacer, the name, and the details — the spacer is `1fr` against the
-   * details' `1fr`, so it is always exactly as tall as they are. That is what puts the name on the
-   * box's centre line with the details under it.
+   * Two rows: the name, then the details. The picture spans both.
    *
-   * The **picture spans all three rows**, which is what keeps the panel compact: its own row would set
-   * the height to the picture's 104px plus the mirrored details, and the picture is taller than the name
-   * it sits beside. Spanning, the height comes from the name and details alone — 64px less — and the
-   * picture is still centred, filling 63% of the panel. §14.4
+   * ---------------------------------------------------------------------------------------------
+   * **The knobs.** Every position in this lockup is one of the four below. Change a number, reload, done.
+   *
+   *   --profile-pad          space from the panel's edges, top right bottom
+   *   --profile-gap          space between the picture and the text, then between the name and the details
+   *   --profile-avatar       the picture's size
+   *   --profile-name-lift    raise the name; 0 sits it on the centre line between the panel's top padding
+   *                          and the joined line. Every 1px here moves the name 1px up
+   * ---------------------------------------------------------------------------------------------
    */
   .profile {
+    --profile-pad: 14px 18px 10px;
+    --profile-gap: 4px 16px;
+    --profile-avatar: 104px;
+    --profile-name-lift: 0px;
+
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
-    grid-template-rows: 1fr auto 1fr;
+    grid-template-rows: auto auto;
     align-items: center;
     align-content: center;
-    gap: 4px 16px;
-    padding: 10px 18px;
+    gap: var(--profile-gap);
+    padding: var(--profile-pad);
   }
 
   .profile__name {
@@ -1049,8 +1265,9 @@
     align-items: center;
     gap: 12px;
     grid-column: 2;
-    grid-row: 2;
+    grid-row: 1;
     min-width: 0;
+    transform: translateY(calc(-1 * var(--profile-name-lift, 0px)));
   }
 
   /* One line, small: the facts on the left, the grade counts at the other end. */
@@ -1061,11 +1278,23 @@
     justify-content: space-between;
     gap: 6px 12px;
     grid-column: 2;
-    grid-row: 3;
+    grid-row: 2;
     min-width: 0;
     font-size: 0.78rem;
     font-weight: 600;
     color: var(--color-dim);
+  }
+
+  /*
+   * The five badges. No utility classes on this element in the JSX on purpose: Tailwind's utilities live in a
+   * lower cascade layer and beat this stylesheet regardless of specificity, which is how a mobile override of
+   * `flex-wrap`/`gap` silently lost before.
+   */
+  .grade-stats {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px;
   }
 
   .profile__stats {
@@ -1094,8 +1323,8 @@
 
   /* A rounded square, per `@border-radius--nav-avatar: 10px`. osu! has no circular avatars. */
   .avatar {
-    width: 104px;
-    height: 104px;
+    width: var(--profile-avatar, 104px);
+    height: var(--profile-avatar, 104px);
     border-radius: var(--radius-md);
     border: 1px solid var(--color-line);
     background-color: hsl(240 7% 12%);
@@ -1109,7 +1338,12 @@
    */
   .username {
     font-family: var(--font-display);
-    font-size: 3rem;
+    /*
+     * The size is the length of the name. A card cannot know how long a name will be, and a long one would
+     * otherwise wrap and push the facts down; three steps (`--name-scale`, set per name in ProfileCard) shrink
+     * it instead. The phone sets a smaller base and multiplies the same steps.
+     */
+    font-size: calc(3rem * var(--name-scale, 1));
     font-weight: 600;
     line-height: 1.05;
     overflow-wrap: anywhere;
@@ -1285,20 +1519,50 @@
    */
   @media (max-width: 900px) {
     .row {
-      grid-template-columns: 64px minmax(0, 1fr) 58px 64px 108px;
+      grid-template-columns: 46px minmax(0, 1fr) auto 58px 60px 96px;
       column-gap: 10px;
-    }
-
-    .row__mods {
-      display: none;
     }
   }
 
   @media (max-width: 640px) {
+    /*
+     * A phone keeps the mods — they were hidden here, which meant the one thing a score row is read for
+     * after its grade was simply absent. The mods take their own track, so the identity column keeps a
+     * workable width instead of the two fighting over it.
+     */
     .row {
-      grid-template-columns: 56px minmax(0, 1fr) 104px;
-      column-gap: 10px;
+      grid-template-columns: 46px minmax(0, 1fr) auto 78px;
+      column-gap: 8px;
       padding-right: 0;
+    }
+
+    .row__mods .mod {
+      width: 22px;
+      height: 22px;
+      font-size: 0.52rem;
+    }
+
+    /* The three lines shrink; the row does not. It stays 86px because the list is windowed against a
+       constant 90px pitch — a variable height would put every scroll position out. */
+    .row__title {
+      font-size: 0.92rem;
+    }
+
+    .row__score {
+      font-size: 0.8rem;
+    }
+
+    .row__meta {
+      font-size: 0.72rem;
+      gap: 8px;
+    }
+
+    .row__pp {
+      font-size: 0.92rem;
+    }
+
+    .row__pp-unit {
+      font-size: 0.62rem;
     }
 
     .row__stars,
@@ -1315,61 +1579,188 @@
     }
 
     .row__grade {
-      width: 56px;
-      border-radius: calc(var(--radius-md) - 1px) 0 0 calc(var(--radius-md) - 1px);
       font-size: 1.35rem;
     }
 
     /*
-     * A phone drops the spacers. They exist to put the picture on the box's centre line, and with the
-     * details wrapping to three lines below it that means 67px of nothing above — dead space, on the
-     * screen with the least of it. Picture and name on one line, everything else under it.
+     * The picture is the tallest thing in the card, so the padding is the whole gap on every side. At 88px it was
+     * **shorter** than the name-and-facts column beside it, so it was centred in the leftover height and sat ~7px
+     * lower from the top than from the left. Equal padding all four sides; the picture keeps the desktop size.
      */
     .profile {
-      grid-template-rows: auto auto;
-      gap: 6px 16px;
+      --profile-pad: 12px;
+      --profile-gap: 6px 10px;
     }
 
-    .avatar-link {
-      grid-row: 1;
-    }
-
-    .profile__name {
-      grid-row: 1;
-    }
-
+    /*
+     * **One line each**, which is the whole point of the layout: the facts are a single 45-character line and
+     * the badges are five items 32px wide. Beside the picture neither has room for its desktop size, so the sizes
+     * come down rather than the lines wrapping.
+     */
     .profile__details {
-      grid-column: 1 / -1;
-      grid-row: 2;
-      justify-content: flex-start;
+      gap: 4px 6px;
+      font-size: 0.6rem;
     }
 
+    .grade-stat__count {
+      font-size: 0.58rem;
+    }
+
+    /*
+     * **Four figures on one line.** At the desktop sizes they measure 86 + 84 + 56 + 70 = 296px against
+     * 296px of panel, so they can never fit and always broke into two rows and doubled the panel. The label
+     * is the widest part of a stat — `PERFORMANCE` in letterspaced caps — so the label leads and the value
+     * follows. Measured after: 250px of 296, one line.
+     */
     .profile__stats dl {
-      gap: 12px 20px;
+      flex-wrap: nowrap;
+      gap: 4px 10px;
     }
 
-    .avatar,
-    .avatar-link {
-      width: 74px;
-      height: 74px;
+    .stat {
+      gap: 1px;
+    }
+
+    .stat__label {
+      font-size: 0.5rem;
+      letter-spacing: 0.06em;
+    }
+
+    .stat__value {
+      font-size: 1rem;
+    }
+
+    .profile__stats {
+      gap: 8px;
+      padding: 10px 14px;
+    }
+
+    /*
+     * Controls shrink. At 390px the chips were deciding where every line broke, which is what put `stars`
+     * alone on a row and stranded the tail of each mod group on its own: the row was full before they
+     * arrived. Smaller type fits the same controls in fewer, fuller rows.
+     */
+    .control {
+      height: 28px;
+      padding: 0 9px;
+      font-size: 0.72rem;
+    }
+
+    .chip {
+      height: 22px;
+      padding: 0 6px;
+      font-size: 0.64rem;
+    }
+
+    .toolbar {
+      gap: 4px;
+    }
+
+    .toolbar__row {
+      gap: 4px;
+    }
+
+    /*
+     * A phone gets a **button** that opens the whole mod list, instead of a sideways-scrolling strip. A strip
+     * hides the fact that anything exists past its right edge, and a filter nobody can see is a filter that is
+     * not there. Open, the chips wrap: every mod the library holds, nothing behind an edge.
+     */
+    .mods-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .mods-filter {
+      display: none;
+    }
+
+    .mods-filter[data-open="true"] {
+      display: flex;
     }
 
     .username {
-      font-size: 2.1rem;
+      font-size: calc(2.5rem * var(--name-scale, 1));
     }
 
     /*
      * On a phone the control row is several lines tall, so a centred count would float halfway down it.
-     * At the top it sits on the same line as the search box, which is where the eye expects it.
+     * It rides the day picker's line, which is short, so nothing is spent on it.
      */
-    .count {
-      align-self: start;
-    }
-  }
-
-  @media (max-width: 520px) {
+    /*
+     * **Scoped to the toolbar.** The game-mode buttons reuse `.count` for their play numbers, and
+     * `align-self: start` was lifting those to the top of the button — which is the superscript it looked
+     * like.
+     */
+    /*
+     * **Three lines on a phone**, packed by these orders:
+     *
+     *   1. search · count · Mods
+     *   2. day picker · sort chips  --  `pp date accuracy stars` beside the date, which was the ask
+     *   3. grade chips
+     *
+     * The search's 200px basis is what puts the day picker on the second line. With a smaller basis the day
+     * picker rode the search's line, and the sort chips — 224px of them — were then left on a line of their own
+     * instead of beside the date, which is the arrangement that was wrong.
+     */
     .search {
-      flex: 1 1 100%;
+      flex: 1 1 200px;
+      min-width: 0;
+    }
+
+    .toolbar .count {
+      order: 1;
+      font-size: 0.68rem;
+    }
+
+    .mods-toggle {
+      order: 2;
+    }
+
+    .daypicker {
+      order: 3;
+    }
+
+    .toolbar__row > [role="group"][aria-label="Sort by"] {
+      order: 4;
+    }
+
+    .toolbar__row > [role="group"][aria-label="Grade"] {
+      order: 5;
+    }
+
+    /* The day picker plus four sort chips have to share one 366px line, so both give up a little padding. */
+    .toolbar__row .control {
+      padding: 0 9px;
+      font-size: 0.74rem;
+    }
+
+    /* Declared after `.toolbar__row .control` so the arrows keep their own, tighter padding. */
+    .daypicker > .control {
+      padding: 0 8px;
+    }
+
+    @media (max-width: 400px) {
+      /*
+       * Under 400px the date control and the four sort chips are too wide to share a line at their full sizes,
+       * so the chips tighten and the search gives up basis — with it, the Mods toggle lands on the second line
+       * and pushes the sort chips off the date's line, which is the arrangement that was wrong.
+       */
+      .search {
+        flex: 1 1 160px;
+      }
+
+      .toolbar__row .control {
+        padding: 0 8px;
+        font-size: 0.7rem;
+      }
+    }
+
+    @media (max-width: 370px) {
+      /* Below this the calendar glyph is the 20px that stops the date and the sort chips sharing a line. */
+      .daypicker > .control:nth-child(2) svg {
+        display: none;
+      }
     }
   }
 }

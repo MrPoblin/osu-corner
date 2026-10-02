@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { GroundTriangles } from "./Triangles.tsx";
+import { GroundTriangles, trianglesOn } from "./Triangles.tsx";
 
 /**
  * The background, which is the whole point of the redesign.
@@ -38,7 +38,7 @@ export function Sky({ cover }: { cover: string | null }) {
       ))}
 
       <div className="sky__scrim" />
-      <GroundTriangles />
+      {trianglesOn() && <GroundTriangles />}
     </div>
   );
 }

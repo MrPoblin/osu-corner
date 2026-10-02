@@ -3,6 +3,7 @@ import type { CSSProperties } from "react";
 
 import { DayPicker } from "./DayPicker.tsx";
 import { Tip } from "./Tip.tsx";
+import { MESH_OFF, meshTile } from "./Triangles.tsx";
 import {
   DEFAULT_QUERY,
   dayCounts,
@@ -54,6 +55,7 @@ export function ReplayList({ mode, plays, onPreview }: Props) {
   const [query, setQuery] = useState<Query>(DEFAULT_QUERY);
   const [selected, setSelected] = useState(0);
   const [range, setRange] = useState({ start: 0, count: 24 });
+  const [modsOpen, setModsOpen] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const previewTimer = useRef<number | undefined>(undefined);
   /**
@@ -220,6 +222,34 @@ export function ReplayList({ mode, plays, onPreview }: Props) {
 
           <DayPicker counts={days} value={query.day} onChange={(day) => setQuery((q) => ({ ...q, day }))} />
 
+          {/*
+           * A phone shows this instead of 18 chips; CSS hides it everywhere else. It sits on the day picker's
+           * line, which has room, rather than at the end of the control row where it wrapped onto a line of its
+           * own for one chip.
+           */}
+          <button
+            type="button"
+            className="chip mods-toggle"
+            aria-expanded={modsOpen}
+            aria-controls="mods-filter"
+            onClick={() => setModsOpen((open) => !open)}
+          >
+            Mods
+            {query.mods.length + query.excluded.length > 0 && (
+              <span className="chip__count">{query.mods.length + query.excluded.length}</span>
+            )}
+            <span aria-hidden="true">{modsOpen ? "▴" : "▾"}</span>
+          </button>
+
+          {/*
+           * The count belongs to the search box's line, where `margin-left: auto` parks it at the right end
+           * of whatever line it lands on — the day picker's, on a phone. As a column of the toolbar it
+           * reserved its own width beside every control above it, which is what squeezed the search box.
+           */}
+          <span className="count">
+            {formatNumber(results.length)} of {formatNumber(plays.length)} plays
+          </span>
+
         <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Sort by">
           {SORTS.map((sort) => {
             const current = query.sort === sort.key;
@@ -282,20 +312,15 @@ export function ReplayList({ mode, plays, onPreview }: Props) {
             best per diff
           </button>
         </div>
-
         </div>
 
-        {/*
-         * The count is a **column** of the toolbar, never a row of its own. As the last item of the
-         * wrapping row above it was pushed onto a fresh line whenever the chips filled the width — a
-         * whole row of vertical space for four words.
-         */}
-        <span className="count">
-          {formatNumber(results.length)} of {formatNumber(plays.length)} plays
-        </span>
-
-        {/* Mods get their own row; see `.toolbar` for why the count must not. */}
-        <div className="mods-filter" role="group" aria-label="Mods">
+        <div
+          className="mods-filter"
+          id="mods-filter"
+          data-open={modsOpen ? "true" : undefined}
+          role="group"
+          aria-label="Mods"
+        >
           {modGroups.map((group) => (
             <div key={group.key} className="mod-group">
               <span className="mod-group__label" style={{ color: group.colour }}>
@@ -432,11 +457,29 @@ const Row = memo(function Row({ play, index, active, ppMax, onEnter, onFocus }: 
         {
           "--star": starColour(modded),
           "--pp": ppColour(play.pp, ppMax),
+          /* Which row this is: its own mesh. */
+          "--row-i": index,
+          "--tri-mesh": meshTile(starColour(modded), index),
         } as CSSProperties
       }
     >
+      {/*
+       * This row's own mesh, in this row's own star colour, drifting.
+       *
+       * Per row, not one field shared down the list: the game gives every score its own, which is why
+       * two rows never show the same arrangement. `aria-hidden` because it is decoration.
+       */}
+      {!MESH_OFF && (
+        <span className="row__mesh" aria-hidden="true">
+          <span className="row__mesh__tile" />
+        </span>
+      )}
       {/* The ink is the distinction: yellow for a plain grade, white for a visibility-modified one. */}
-      <span className="row__grade" style={{ backgroundColor: grade.colour, color: grade.ink }}>
+      {/* `--grade` because the flare's gradient cannot read `background-color`; the stylesheet paints both. */}
+      <span
+        className="row__grade"
+        style={{ "--grade": grade.colour, color: grade.ink } as React.CSSProperties}
+      >
         {grade.letter}
       </span>
 
@@ -484,19 +527,12 @@ const Row = memo(function Row({ play, index, active, ppMax, onEnter, onFocus }: 
         ))}
       </ul>
 
+      {/* Only when the mods moved the rating, and then it carries the one thing the row cannot say:
+          what the map rates with no mods at all. Same number, no card. */}
       <Tip
         className="tip--stars"
-        align="end"
-        pop={
-          differs ? (
-            <>
-              <b>{modded.toFixed(2)}★</b>
-              <span>{base.toFixed(2)}★ with no mods</span>
-            </>
-          ) : (
-            <b>{base.toFixed(2)}★</b>
-          )
-        }
+        align="center"
+        pop={differs ? <b>{base.toFixed(2)}★</b> : undefined}
       >
         <p className="row__stars">{modded.toFixed(2)}★</p>
       </Tip>

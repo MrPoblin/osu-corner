@@ -14,7 +14,7 @@ export function Tip({
   className,
   clipOnly = false,
 }: {
-  pop: ReactNode;
+  pop: ReactNode | undefined;
   children: ReactNode;
   /**
    * `start` and `end` anchor the card's edge to the trigger.
@@ -53,9 +53,12 @@ export function Tip({
       onFocus={clipOnly ? measure : undefined}
     >
       {children}
-      <span className="tip__pop" role="tooltip">
-        {pop}
-      </span>
+      {/* Nothing to say, no card — an empty one would still paint as a small box. */}
+      {pop ? (
+        <span className="tip__pop" role="tooltip">
+          {pop}
+        </span>
+      ) : null}
     </span>
   );
 }

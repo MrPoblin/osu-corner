@@ -50,10 +50,16 @@ interface Tile {
   alpha: [number, number];
 }
 
-/** The two still depths, drawn together. */
+/**
+ * The two still depths, drawn together.
+ *
+ * Sized against the viewport, not against a triangle: a repeating tile shows its repeat as many times as
+ * it fits, and at 320×400 these fitted nearly five times across a laptop screen, which is what "why does
+ * every triangle sit where I expect it" was. A tile wider than the thing it covers has no visible repeat.
+ */
 const STILL: Tile[] = [
-  { width: 320, height: 400, count: 4, minSize: 54, maxSize: 104, alpha: [0.05, 0.13] },
-  { width: 560, height: 700, count: 3, minSize: 110, maxSize: 165, alpha: [0.04, 0.09] },
+  { width: 900, height: 620, count: 12, minSize: 54, maxSize: 104, alpha: [0.05, 0.13] },
+  { width: 1180, height: 880, count: 9, minSize: 110, maxSize: 165, alpha: [0.04, 0.09] },
 ];
 
 /**
@@ -67,13 +73,41 @@ const STILL: Tile[] = [
  *
  * Its tile height is also its travel distance, which the matching keyframe must equal.
  */
-const DRIFTING: Tile = { width: 260, height: 340, count: 7, minSize: 22, maxSize: 64, alpha: [0.06, 0.16] };
+const DRIFTING: Tile = { width: 880, height: 520, count: 20, minSize: 22, maxSize: 64, alpha: [0.06, 0.16] };
+
+/*
+ * The background field is **off by default**; `?triangles` brings it back.
+ *
+ * A URL flag rather than a code change so the two can be compared without a rebuild, and so the answer
+ * to "can I see it without them" is a reload rather than an edit. The rows keep their own mesh either
+ * way — this only governs the field behind the page and the arrival sweep.
+ */
+export function trianglesOn(): boolean {
+  return flagOn("triangles");
+}
+
+/** Any switch that is a URL flag rather than a setting. */
+export function flagOn(name: string): boolean {
+  return new URLSearchParams(window.location.search).has(name);
+}
+
+/**
+ * `?nomesh` — the row meshes are not rendered at all.
+ *
+ * A debug switch, not a preference. Measuring what a decorative layer costs needs a page where it is
+ * genuinely absent: `animation: none` leaves the elements, their layers and their backgrounds in place, and
+ * the browser's own reduced-motion setting confounds the comparison by changing behaviour beyond this CSS.
+ */
+export const MESH_OFF = flagOn("nomesh");
+
+/** `?nomove` — the meshes render but do not drift. Splits "the element" from "the movement" when measuring. */
+export const MESH_STILL = flagOn("nomove");
 
 /**
  * A small linear congruential generator: the same field every time, without a seed library.
  * Deterministic matters — the tile is baked into a data URI, so it has to be reproducible.
  */
-function tile(tile: Tile, seed: number): string {
+function tile(tile: Tile, seed: number, colour = "#fff"): string {
   let state = seed;
   const next = () => {
     state = (state * 1664525 + 1013904223) >>> 0;
@@ -100,12 +134,47 @@ function tile(tile: Tile, seed: number): string {
       `${left.toFixed(1)},${(top + height).toFixed(1)}`,
     ].join(" ");
 
-    return `<polygon points='${points}' fill='none' stroke='#fff' stroke-opacity='${alpha.toFixed(3)}' stroke-width='0.6'/>`;
+    return `<polygon points='${points}' fill='none' stroke='${colour}' stroke-opacity='${alpha.toFixed(3)}' stroke-width='0.6'/>`;
   }).join("");
 
   const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${tile.width}' height='${tile.height}'>${triangles}</svg>`;
 
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
+
+const MESH: Tile = { width: 1200, height: 250, count: 26, minSize: 30, maxSize: 110, alpha: [0.4, 0.95] };
+
+const MESH_SEEDS = Array.from({ length: 6 }, (_, i) => 0x2f8a1c3d + i * 0x9e3779b9);
+
+/**
+ * A row's mesh: the tile with **that row's star colour drawn into it**.
+ *
+ * Drawn in, not applied with a CSS `mask-image`, and that is the whole point of the function. Firefox
+ * applies a mask on the CPU, so a masked element that is *also* animating is re-masked every frame —
+ * seventeen of those put a real machine at half a core while Chrome, which composites masks, shrugged.
+ * Baked, the layer is a background image sliding under a transform, which is the same shape as the
+ * background field: the one animation here that was never a problem.
+ *
+ * The colour is **snapped to a step of 8 per channel before it becomes a cache key**, so a library of
+ * eight thousand plays cannot mint eight thousand tiles for colours no eye can tell apart.
+ */
+const meshCache = new Map<string, string>();
+
+export function meshTile(colour: string, variant: number): string {
+  const channels = (colour.match(/\d+/g) ?? ["255", "255", "255"])
+    .slice(0, 3)
+    .map((n) => Math.min(255, Math.round(Number(n) / 8) * 8));
+  const hex = `#${channels.map((c) => c.toString(16).padStart(2, "0")).join("")}`;
+  const seed = MESH_SEEDS[variant % MESH_SEEDS.length];
+  const key = `${hex}|${variant % MESH_SEEDS.length}`;
+
+  let hit = meshCache.get(key);
+  if (!hit) {
+    hit = tile(MESH, seed, hex);
+    meshCache.set(key, hit);
+  }
+
+  return hit;
 }
 
 /** The drifting background field. */
@@ -130,7 +199,7 @@ export function GroundTriangles() {
           backgroundImage: tile(DRIFTING, 0x51ed270b),
           backgroundSize: `${DRIFTING.width}px ${DRIFTING.height}px`,
           height: `calc(100% + ${DRIFTING.height * 2}px)`,
-          animationDuration: "26s",
+          animationDuration: "40s",
         } as CSSProperties}
       />
     </div>

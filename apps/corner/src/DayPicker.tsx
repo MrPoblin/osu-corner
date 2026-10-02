@@ -84,7 +84,7 @@ export function DayPicker({ counts, value, onChange }: Props) {
     ({ "--heat": `${Math.round(16 + (count / busiest) * 64)}%` }) as React.CSSProperties;
 
   return (
-    <div className="daypicker flex items-center gap-1">
+    <div className="daypicker">
       <button
         type="button"
         className="control"

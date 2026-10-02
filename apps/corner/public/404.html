@@ -6,53 +6,15 @@
     <meta name="color-scheme" content="dark" />
     <title>Not found</title>
     <!--
-      Served by the assets router for any unmatched path (`not_found_handling = "404-page"`), so this
-      is a plain document with no build step — which is why the styles are inline and the type falls
-      back to `ui-rounded` rather than Quicksand. The hashed font asset's name is not knowable from a
-      static file. The colours match `src/index.css`; see design §14.2.
+      Served by the assets router for any unmatched path (`not_found_handling = "404-page"`).
+
+      **Temporary.** The corner is meant to borrow poblin.live's own 404 rather than own a page of its
+      own, and until it is mounted under that domain this sends the visitor to osu! instead of showing
+      a hand-rolled screen nobody asked for. Change the two URLs in this file to repoint it.
     -->
-    <style>
-      :root {
-        color-scheme: dark;
-      }
-
-      body {
-        margin: 0;
-        min-height: 100dvh;
-        display: grid;
-        place-content: center;
-        justify-items: center;
-        gap: 0.6rem;
-        padding: 2rem;
-        background-color: #151126;
-        color: #f4f1fa;
-        font-family: ui-rounded, "Segoe UI Variable Text", system-ui, sans-serif;
-        font-weight: 500;
-        text-align: center;
-      }
-
-      p {
-        margin: 0;
-        color: #f4f1fa99;
-      }
-
-      a {
-        color: #ff66aa;
-        text-underline-offset: 4px;
-      }
-
-      a:focus-visible {
-        outline: 3px solid #ff66aa;
-        outline-offset: 4px;
-        border-radius: 999px;
-      }
-    </style>
+    <meta http-equiv="refresh" content="0; url=https://osu.ppy.sh/" />
   </head>
   <body>
-    <p>Not found.</p>
-    <!-- `./` resolves to whatever the mount is — `/osu/nonsense` gives `/osu/`. A hardcoded path
-         would be wrong for a clone serving the corner from a different base, and the CSP forbids the
-         inline script that would otherwise derive it. -->
-    <a href="./">Back to the corner</a>
+    <p>Not found. <a href="https://osu.ppy.sh/">Continue to osu!</a></p>
   </body>
 </html>

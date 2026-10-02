@@ -4,7 +4,7 @@ import type { CSSProperties } from "react";
 import { ProfileCard } from "./ProfileCard.tsx";
 import { ReplayList } from "./ReplayList.tsx";
 import { Sky } from "./Sky.tsx";
-import { Triangles, useEntryFinished } from "./Triangles.tsx";
+import { MESH_STILL, Triangles, trianglesOn, useEntryFinished } from "./Triangles.tsx";
 import { accentFor, coverUrl, formatNumber } from "./osu.ts";
 import type { Play } from "./osu.ts";
 import { useIndexes } from "./useJson.ts";
@@ -40,21 +40,27 @@ export default function App() {
 
   // The arrival sweep is a one-off; leaving its elements mounted paints nothing forever.
   const entered = useEntryFinished();
+  // The reveal's clip is released when it lands, for Firefox; see `.reveal[data-revealed]`.
+  const revealed = useEntryFinished(700);
 
   const accent = preview ? accentFor(preview.stars) : "#ff66aa";
 
   return (
-    <div className="relative min-h-[100dvh]" style={{ "--accent": accent } as CSSProperties}>
+    <div
+      className="relative min-h-[100dvh]"
+      style={{ "--accent": accent } as CSSProperties}
+      data-mesh={MESH_STILL ? "still" : undefined}
+    >
       <Sky cover={preview ? coverUrl(preview.beatmap.set) : null} />
 
-      {!entered && (
+      {trianglesOn() && !entered && (
         <div className="entry" aria-hidden="true">
           <Triangles />
         </div>
       )}
 
-      <div className="reveal">
-        <header className="mx-auto flex w-full max-w-[1240px] flex-wrap items-center justify-between gap-3 px-6 pt-7">
+      <div className="reveal" data-revealed={revealed ? "" : undefined}>
+        <header className="mx-auto flex w-full max-w-[1240px] flex-wrap items-center justify-between gap-3 px-3 pt-5 sm:px-6 sm:pt-7">
           <div className="flex flex-wrap items-center gap-3">
             {/* A plain circle: "back to site" is a way out, not a destination worth a full button, and
                 the wordmark should be the first thing on the page. */}
@@ -88,7 +94,7 @@ export default function App() {
           </nav>
         </header>
 
-        <main className="mx-auto w-full max-w-[1240px] px-6">
+        <main className="mx-auto w-full max-w-[1240px] px-3 sm:px-6">
           <section aria-label="Profile" className="mt-3">
             <ProfileCard mode={mode} />
           </section>
