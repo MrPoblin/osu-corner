@@ -27,6 +27,9 @@ pub const PROFILE_POLICY: CachePolicy = CachePolicy::new(3_600, 3_600);
 /// `rank_history` and not `rankHistory`, for the same reason: osu! serves both, and only one can be
 /// the 90-point line the card draws.
 pub const PROFILE_FIELDS: &[&str] = &[
+    // The account id, so the card can link to the player's own osu! profile without a user-agnostic
+    // repository having to know whose it is. 11 bytes.
+    "id",
     "username",
     "avatar_url",
     "country_code",

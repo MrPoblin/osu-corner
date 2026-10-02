@@ -44,6 +44,12 @@ pub enum Kind {
     Other = 0,
     Osu = 1,
     Osr = 2,
+    ///
+    /// A replay that parsed cleanly but belongs to **somebody else**.
+    ///
+    /// Appended rather than inserted: the variant's discriminant is what the ledger stores, so
+    /// putting it anywhere but last would silently renumber every existing row.
+    Foreign = 3,
 }
 
 /// One inspected blob, ready to be written.

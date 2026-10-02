@@ -1,3 +1,1376 @@
+@import "@fontsource-variable/fredoka";
+@import "@fontsource-variable/quicksand";
 @import "tailwindcss";
 
-/* No palette, type or tokens yet — the corner's visual identity is not decided. */
+/*
+ * osu! corner — design tokens.
+ *
+ * Radii, type sizes and badge geometry are read from osu-web's own `resources/css/variables.less`
+ * rather than chosen: `@border-radius--large: 10px`, `@border-radius--extra: 20px`,
+ * `@border-radius--nav-avatar: 10px`, `@rank-width: 60px`, `@mod-height-normal: 22px`. The mod badge
+ * is a **flat hexagon**, 120x84 in osu!'s own SVG — aspect 10:7, wider than tall.
+ *
+ * The avatar is a **rounded square**, not a circle. osu!'s nav avatar token is a 10px radius, and
+ * every avatar on osu-web and in lazer is a rounded square.
+ */
+@theme {
+  --font-display: "Fredoka Variable", ui-rounded, "Segoe UI Variable Display", system-ui, sans-serif;
+  --font-sans: "Quicksand Variable", ui-rounded, "Segoe UI Variable Text", system-ui, sans-serif;
+
+  /* Surfaces. Neutral, translucent, over blurred artwork — lazer's own panel treatment. */
+  --color-panel: hsl(240 7% 9% / 0.58);
+  --color-panel-solid: hsl(240 7% 10%);
+  --color-panel-strong: hsl(240 7% 7% / 0.84);
+  --color-line: hsl(0 0% 100% / 0.13);
+  --color-text: #ffffff;
+  --color-dim: hsl(240 8% 90% / 0.68);
+
+  --color-accent: #ff66aa;
+  --color-on-accent: hsl(333 60% 13%);
+
+  /* `OsuColour.ForRank`: XH/X, SH/S, A, B, C, D, F. */
+  --color-grade-x: #de31ae;
+  --color-grade-s: #02b5c3;
+  --color-grade-a: #88da20;
+  --color-grade-b: #e3b130;
+  --color-grade-c: #ff8e5d;
+  --color-grade-d: #ff5a5a;
+  --color-grade-f: #4a4a52;
+
+  /*
+   * The radius scale. osu-web's tokens are 10/20, but the brief asked for **rounder** — so these are
+   * lifted to 8/18/26 while keeping the rule that matters: one value per role, never mixed.
+   */
+  --radius-sm: 8px;
+  --radius-md: 18px;
+  --radius-lg: 26px;
+  --radius-pill: 999px;
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  /* Overshoot, for selection: the row lands slightly past its size and settles. Translation, not
+     decoration — it is what makes the change read as "this one", and it is transform-only. */
+  --ease-pop: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    -webkit-text-size-adjust: 100%;
+    /*
+     * `clip`, not `hidden`: an invisible hover card parked off the right edge was expanding the layout
+     * viewport on a phone and giving the page a sideways scroll. `clip` stops the overflow without
+     * making this element a scroll container.
+     */
+    overflow-x: clip;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    font-family: var(--font-sans);
+    font-weight: 600;
+    color: var(--color-text);
+    background-color: #14121a;
+    overflow-x: clip;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    margin: 0;
+  }
+
+  button,
+  input {
+    font: inherit;
+    color: inherit;
+  }
+
+  ::placeholder {
+    color: var(--color-dim);
+  }
+
+  :focus-visible {
+    outline: 3px solid var(--accent, var(--color-accent));
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+}
+
+@layer components {
+  /* -------------------------------------------------------------------------------------------
+   * The background: blurred cover art + osu!'s triangle field
+   * ----------------------------------------------------------------------------------------- */
+
+  .sky {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+    background-color: #14121a;
+  }
+
+  .sky__art {
+    position: absolute;
+    inset: -12%;
+    background-position: center;
+    background-size: cover;
+    filter: blur(40px) saturate(1.6) brightness(0.72);
+    opacity: 0;
+    transition: opacity 620ms var(--ease-out);
+    /*
+     * Its own compositing layer, so a repaint of the drifting triangles above it cannot make Firefox
+     * re-rasterise a 40px blur over a screen-sized texture. Cheapest fix for the one expensive filter
+     * left on the page.
+     */
+    transform: translateZ(0);
+  }
+
+  .sky__art[data-active="true"] {
+    opacity: 1;
+  }
+
+  .sky__scrim {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      180deg,
+      hsl(240 20% 6% / 0.5) 0%,
+      hsl(240 20% 8% / 0.34) 44%,
+      hsl(240 20% 5% / 0.64) 100%
+    );
+  }
+
+  /*
+   * Thin, and a lot of them: the brief asked for more triangles and thinner ones, so the stroke is
+   * 0.6 of a tile unit — a hairline at any rendered size.
+   *
+   * A **tiled texture moved by the compositor**, not 300 elements. See `Triangles.tsx`: each layer is
+   * one element repeating one small triangle tile, so the browser rasterises the tile once and the
+   * animation is a translate of a viewport-sized layer.
+   */
+  .tri-field {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+  }
+
+  /* Two still depths, painted once into the base layer — no animation, so no compositor layer. */
+  .tri-still {
+    position: absolute;
+    inset: 0;
+    background-repeat: repeat;
+  }
+
+  .tri-layer {
+    position: absolute;
+    inset: 0 0 auto 0;
+    background-repeat: repeat;
+    animation-name: tri-drift-1;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    will-change: transform;
+  }
+
+  /*
+   * One animated depth, and one literal keyframe for it.
+   *
+   * The distance is literal on purpose: a custom property read inside `@keyframes` becomes
+   * animation-tainted and the transform never resolves, so `var(--tri-tile)` silently animates nothing.
+   * This number is the tile height in `Triangles.tsx`'s `DRIFTING`, and the two must match or the loop
+   * jumps.
+   */
+  @keyframes tri-drift-1 {
+    from {
+      transform: translate3d(0, 0, 0);
+    }
+    to {
+      transform: translate3d(0, -340px, 0);
+    }
+  }
+
+  .tri {
+    position: absolute;
+    color: #fff;
+    opacity: var(--tri-alpha, 0.14);
+  }
+
+  .tri svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* -------------------------------------------------------------------------------------------
+   * Entry
+   * ----------------------------------------------------------------------------------------- */
+
+  .entry {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .entry .tri {
+    opacity: 0;
+    animation: tri-rise 420ms var(--ease-out) var(--tri-delay, 0ms) both;
+  }
+
+  @keyframes tri-rise {
+    from {
+      opacity: 0;
+      transform: translate3d(0, 14vh, 0);
+    }
+    25%,
+    70% {
+      opacity: var(--tri-alpha, 0.3);
+    }
+    to {
+      opacity: 0;
+      transform: translate3d(0, -24vh, 0);
+    }
+  }
+
+  .reveal {
+    position: relative;
+    z-index: 1;
+    animation: reveal-clip 480ms var(--ease-out) 60ms both;
+  }
+
+  @keyframes reveal-clip {
+    from {
+      clip-path: inset(100% 0 0 0);
+    }
+    to {
+      clip-path: inset(0 0 0 0);
+    }
+  }
+
+  @keyframes reveal-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .entry {
+      display: none;
+    }
+
+    .tri-layer {
+      animation: none;
+    }
+
+    /*
+     * No animation at all here, rather than a shortened one.
+     *
+     * The reveal hid the page's entire content behind a `clip-path` for its duration, with
+     * `fill-mode: both` — so anything that stopped the animation from advancing left a blank page.
+     * "Fewer and gentler" is the right rule for motion that explains something; for a purely
+     * decorative entrance, the honest reduced version is none.
+     */
+    .reveal {
+      animation: none;
+    }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    @view-transition {
+      navigation: auto;
+    }
+  }
+
+  .brand {
+    view-transition-name: brand;
+  }
+
+  /* -------------------------------------------------------------------------------------------
+   * Surfaces and controls
+   * ----------------------------------------------------------------------------------------- */
+
+  .panel {
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-lg);
+    background-color: var(--color-panel);
+  }
+
+  .control {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    background-color: var(--color-panel-strong);
+    color: var(--color-text);
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-decoration: none;
+    cursor: pointer;
+    transition:
+      background-color 150ms var(--ease-out),
+      border-color 150ms var(--ease-out),
+      color 150ms var(--ease-out);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .control:hover {
+      border-color: hsl(0 0% 100% / 0.3);
+      background-color: hsl(240 7% 14% / 0.88);
+    }
+  }
+
+  .control[aria-pressed="true"],
+  .control[aria-current="page"] {
+    border-color: transparent;
+    background-color: var(--color-accent);
+    color: var(--color-on-accent);
+  }
+
+  .control:active {
+    transform: translateY(1px);
+  }
+
+  .search {
+    min-width: 190px;
+    cursor: text;
+  }
+
+  .search input {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    outline: none;
+    font-size: 0.82rem;
+    font-weight: 600;
+  }
+
+  .chip {
+    height: 24px;
+    padding: 0 8px;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-sm);
+    background-color: transparent;
+    color: var(--color-dim);
+    font-size: 0.72rem;
+    font-weight: 700;
+    /* A label wraps as a whole chip, never mid-phrase. */
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background-color 150ms var(--ease-out),
+      color 150ms var(--ease-out);
+  }
+
+  .chip[aria-pressed="true"] {
+    border-color: transparent;
+    color: #17141c;
+  }
+
+  /* A forbid chip: outlined red and struck through, so "no plays with this mod" is unmistakable. */
+  .chip[data-mod-state="out"] {
+    border-color: #ff5a5a;
+    color: #ff9a9a;
+    text-decoration: line-through;
+  }
+
+  .chip__count {
+    margin-left: 4px;
+    font-size: 0.62rem;
+    font-weight: 600;
+    opacity: 0.55;
+  }
+
+  /*
+   * Two rows, explicit: the controls and the count on the first, the mods on their own row.
+   *
+   * Left as one wrapping flex row, the count was pushed onto a line of its own whenever the chips
+   * filled the width — a whole row of vertical space for four words.
+   */
+  .toolbar {
+    display: grid;
+    /*
+     * `minmax(0, 1fr)`, not an implicit `auto`: an auto grid column is sized to its widest child's
+     * **max-content**, so the toolbar grew past its container instead of wrapping inside it and pushed
+     * the whole page 144px wide on a phone.
+     *
+     * The second column holds the count, so the count can never take a line of its own.
+     */
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px 12px;
+  }
+
+  .toolbar__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  /*
+   * Mods are grouped by lazer's own categories, in lazer's own order, the way osu!'s mod select
+   * presents them — an alphabetical list of acronyms is not how anyone reads mods.
+   */
+  .mods-filter {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 16px;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+  }
+
+  /*
+   * A group wraps inside itself as well. Left `nowrap`, the biggest category — eight chips plus a
+   * label — was wider than a phone and took the whole page with it.
+   */
+  .mod-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .mod-group__label {
+    margin-right: 2px;
+    font-size: 0.58rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .count {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+    white-space: nowrap;
+    font-family: var(--font-display);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--color-dim);
+  }
+
+  /* -------------------------------------------------------------------------------------------
+   * The day picker
+   * ----------------------------------------------------------------------------------------- */
+
+  .daypicker {
+    position: relative;
+  }
+
+  .daypicker__panel {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 6px);
+    left: 0;
+    width: 262px;
+    padding: 12px;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    background-color: hsl(240 8% 8% / 0.96);
+    box-shadow: 0 18px 40px hsl(240 40% 2% / 0.55);
+  }
+
+  .daypicker__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .daypicker__month {
+    font-family: var(--font-display);
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  /* The title doubles as the zoom control: days → months → years. */
+  .daypicker__title {
+    border: 0;
+    background: none;
+    font-family: var(--font-display);
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .daypicker__title:hover {
+      color: var(--accent, var(--color-accent));
+    }
+  }
+
+  .daypicker__zoom {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+  }
+
+  .daypicker__tile {
+    display: grid;
+    place-items: center;
+    gap: 1px;
+    padding: 9px 4px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background-color: color-mix(in oklab, var(--accent) var(--heat, 0%), transparent);
+    color: var(--color-text);
+    font-size: 0.78rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .daypicker__tile-count {
+    font-size: 0.62rem;
+    font-weight: 600;
+    opacity: 0.8;
+  }
+
+  .daypicker__grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 3px;
+  }
+
+  .daypicker__dow {
+    padding-bottom: 4px;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--color-dim);
+    text-align: center;
+  }
+
+  .daypicker__day {
+    display: grid;
+    place-items: center;
+    aspect-ratio: 1;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background-color: color-mix(in oklab, var(--accent) var(--heat, 0%), transparent);
+    font-size: 0.72rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-dim);
+    cursor: pointer;
+  }
+
+  /* Days with plays are shaded by how many, so the calendar reads as a density map. The mark itself
+     is what lifts them out of the dim colour; `--heat` is the shading. */
+  .daypicker__day[data-count] {
+    color: var(--color-text);
+    font-weight: 700;
+  }
+
+  .daypicker__tile[data-count] {
+    color: var(--color-text);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .daypicker__day[data-count]:hover {
+      border-color: var(--color-text);
+    }
+  }
+
+  .daypicker__day[aria-pressed="true"] {
+    border-color: var(--color-text);
+    background-color: var(--color-text);
+    color: #17141c;
+  }
+
+  /* -------------------------------------------------------------------------------------------
+   * The list
+   * ----------------------------------------------------------------------------------------- */
+
+  .list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* The gap lives on the children, so a row's top is exactly `index * 90px` and the windowing
+     spacers in ReplayList can stand in for unrendered rows without measuring anything. */
+  .list > * {
+    margin-bottom: 4px;
+  }
+
+  /*
+   * Rows are uniform height and only ever change *size*, never shape. Depth is a width step plus a
+   * little opacity, so the row you are on comes forward and its neighbours recede — which is what
+   * the brief asked for and what the previous pass removed entirely.
+   */
+  .row {
+    position: relative;
+    display: grid;
+    /*
+     * Every column is a fixed width except the identity, which is the only one that should absorb
+     * slack. The mods column is **fixed and right-aligned** on purpose: sized `auto`, it grew with
+     * each play's mod count and pushed the stars, accuracy and pp to a different x on every row,
+     * which is exactly what "the positioning is still shit" was.
+     */
+    grid-template-columns: 68px minmax(0, 1fr) 152px 60px 64px 116px;
+    align-items: center;
+    column-gap: 12px;
+    width: 100%;
+    height: 86px;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    background-color: color-mix(in oklab, var(--star) 14%, var(--color-panel));
+    cursor: pointer;
+    transform: scale(1);
+    transition:
+      transform 260ms var(--ease-pop),
+      border-color 220ms var(--ease-out),
+      box-shadow 220ms var(--ease-out);
+  }
+
+  /* Keyboard selection is not given a colour or a glow: the row under the pointer is the one that
+     pops, and a permanently highlighted row read as decoration rather than information. */
+
+  @media (hover: hover) and (pointer: fine) {
+    /*
+     * The pointer's row pops out properly and its neighbours pop a little — the brief was explicit
+     * that the surround moves too, just less. The pop is a transform, so it costs no layout, and the
+     * glow is the play's star colour.
+     */
+    .row:hover {
+      z-index: 3;
+      transform: scale(1.05);
+      border-color: var(--star);
+    }
+
+    .row:hover + .row,
+    .row:has(+ .row:hover) {
+      z-index: 2;
+      transform: scale(1.014);
+    }
+
+    .row:hover + .row + .row,
+    .row:has(+ .row + .row:hover) {
+      transform: scale(1.005);
+    }
+  }
+
+  /* --- the grade, a full-height block on the left --------------------------------------------
+   *
+   * The ink is the whole distinction: osu! draws `SS` and `S` in **yellow** and their
+   * visibility-modified twins in **white**, on the same coloured pill. The previous pass wrote a
+   * raised `H`, which is not a thing osu! does.
+   */
+
+  .row__grade {
+    display: grid;
+    place-items: center;
+    align-self: stretch;
+    width: 68px;
+    border-radius: calc(var(--radius-md) - 1px) 0 0 calc(var(--radius-md) - 1px);
+    font-family: var(--font-display);
+    font-size: 1.72rem;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+    text-shadow: 0 1px 4px hsl(0 0% 0% / 0.45);
+  }
+
+  /* --- text -------------------------------------------------------------------------------- */
+
+  .row__identity {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  /* osu-web's three lines: the map, the score, then the difficulty and when it was played. The
+     mapper is deliberately absent. */
+  .row__title {
+    font-size: 1rem;
+    font-weight: 700;
+  }
+
+  .row__score {
+    font-size: 0.85rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .row__combo {
+    font-weight: 700;
+    color: #7cf07c;
+  }
+
+  /*
+   * A two-column grid, not a flex row: the difficulty takes whatever space is left and truncates, and
+   * the date keeps a column of its own. As a flex row a long difficulty pushed the date along, so the
+   * date sat in the middle of the string instead of staying where it belongs.
+   */
+  /*
+   * The difficulty and the date sit **next to each other**, the date immediately after the name.
+   *
+   * The difficulty is capped rather than put in a fixed column: a column leaves a gap after every short
+   * name (the date floated off on its own), while uncapped a long name pushes the date past the middle
+   * of the row. At most 160px — p95 of the library's own names — keeps the date right beside the name
+   * and never far from it.
+   *
+   * A flex row, not a grid: an `auto` grid column **absorbs the free space**, so the date's trigger grew
+   * to fill the leftover 426px and its hover card centred on that box instead of on the words.
+   */
+  .row__meta {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 0.8rem;
+  }
+
+  .row__difficulty {
+    display: block;
+    max-width: 160px;
+    font-weight: 700;
+    color: #ffcf5c;
+  }
+
+  .row__date {
+    color: var(--color-dim);
+    font-weight: 600;
+  }
+
+  /*
+   * Every label truncates. **Nothing expands on hover any more**: expanding a label to `max-content`
+   * made it overflow its column and slide under its neighbour — a long difficulty name pushed the date
+   * into the middle of the string. The full text lives in a hover card instead, which cannot move
+   * anything.
+   */
+  .row__title,
+  .row__score,
+  .row__difficulty,
+  .row__date {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* --- numbers and badges ------------------------------------------------------------------- */
+
+  .row__stars {
+    font-family: var(--font-display);
+    font-size: 1rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+    color: var(--star);
+  }
+
+  .row__mods {
+    display: flex;
+    justify-content: flex-end;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  /*
+   * osu-web's mod badge is a flat hexagon, 120x84 — aspect 10:7 — at `@mod-height-normal: 22px`.
+   * These run a little larger so two letters fit comfortably.
+   */
+  .mod {
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 26px;
+    clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+    font-size: 0.64rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    color: #17141c;
+  }
+
+  /* Every mod is shown at rest — the previous pass hid the fourth onward until hover. They huddle
+     when a play carries a lot of them and un-huddle on hover, and the un-huddle is animated. */
+  .row__mod {
+    display: flex;
+  }
+
+  .row__mods .row__mod + .row__mod {
+    margin-left: 3px;
+    transition: margin-left 260ms var(--ease-pop);
+  }
+
+  .row__mods:has(.row__mod:nth-child(4)) .row__mod + .row__mod {
+    margin-left: -11px;
+  }
+
+  .row__mods:has(.row__mod:nth-child(6)) .row__mod + .row__mod {
+    margin-left: -18px;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .row:hover .row__mods:has(.row__mod:nth-child(4)) .row__mod + .row__mod {
+      margin-left: 3px;
+    }
+  }
+
+  /* Accuracy in the site's amber; the star rating in the star ramp; pp in the star ramp too, since
+     the brief asked for the pp colour to come from the same ramp the difficulty does. */
+  .row__accuracy {
+    font-family: var(--font-display);
+    font-size: 1rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+    color: #ffd166;
+  }
+
+  /*
+   * One raw pp value, fused to the row: it runs the row's **full height** and reaches its **right
+   * edge**, with the row's own radius on that side, so it reads as part of the row rather than a chip
+   * floating inside it. The left edge is cut into a chevron and the right corners are rounded in the
+   * polygon itself, because `clip-path` and `border-radius` cannot be combined.
+   *
+   * The colour is the pp's own position on the star ramp (see `ppColour`), not the play's star colour.
+   */
+  .row__pp {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    align-self: stretch;
+    background-color: hsl(240 12% 5% / 0.6);
+    clip-path: polygon(
+      0 0,
+      calc(100% - 18px) 0,
+      calc(100% - 9px) 2px,
+      calc(100% - 2px) 9px,
+      100% 18px,
+      100% calc(100% - 18px),
+      calc(100% - 2px) calc(100% - 9px),
+      calc(100% - 9px) calc(100% - 2px),
+      calc(100% - 18px) 100%,
+      0 100%,
+      12px 50%
+    );
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--pp);
+  }
+
+  .row__pp-unit {
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+
+  /* -------------------------------------------------------------------------------------------
+   * Hover cards
+   * ----------------------------------------------------------------------------------------- */
+
+  .tip {
+    position: relative;
+    display: inline-flex;
+  }
+
+  /* A real element rather than `title`: the browser's own tooltip cannot be styled, cannot hold a
+     mod's settings alongside its name, and takes a second to appear. */
+  .tip__pop {
+    position: absolute;
+    z-index: 40;
+    bottom: calc(100% + 9px);
+    left: 50%;
+    width: max-content;
+    /* Never wider than the screen it is shown on. */
+    max-width: min(280px, calc(100vw - 24px));
+    padding: 8px 11px;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-sm);
+    background-color: hsl(240 12% 7% / 0.97);
+    box-shadow: 0 16px 34px hsl(240 40% 2% / 0.62);
+    font-size: 0.76rem;
+    font-weight: 600;
+    line-height: 1.4;
+    text-align: center;
+    color: var(--color-text);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(-50%) translateY(5px) scale(0.97);
+    transition:
+      opacity 140ms var(--ease-out),
+      transform 140ms var(--ease-out);
+  }
+
+  .tip[data-align="end"] .tip__pop {
+    left: auto;
+    right: 0;
+    transform: translateY(5px) scale(0.97);
+  }
+
+  .tip[data-align="start"] .tip__pop {
+    left: 0;
+    transform: translateY(5px) scale(0.97);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .tip:hover .tip__pop {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0) scale(1);
+    }
+
+    .tip[data-align="end"]:hover .tip__pop {
+      transform: translateY(0) scale(1);
+    }
+
+    .tip[data-align="start"]:hover .tip__pop {
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  .tip:focus-visible .tip__pop {
+    opacity: 1;
+  }
+
+  /*
+   * A `clipOnly` trigger stamps whether its label is actually cut off; when it is not, there is no
+   * card to show. `display: none` rather than another opacity rule so it wins over every hover and
+   * focus rule above by construction, not by order.
+   */
+  .tip[data-clipped="false"] .tip__pop {
+    display: none;
+  }
+
+  .tip__pop b {
+    font-weight: 700;
+  }
+
+  /*
+   * A trigger that hugs its own text, so the card appears when pointing at the words and nowhere else.
+   *
+   * As a plain `block` it filled its column, and the harmless-looking strip of empty space beside a short
+   * title counted as hovering the trigger. `fit-content` with a `max-width` cap keeps the two things that
+   * matter: the box ends where the text ends, and text longer than the column still truncates.
+   */
+  .tip--fill {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  /* A trigger that *is* the grid item — the pp block. The card has to sit outside the block itself,
+     because `clip-path` clips descendants and the block's chevron is a clip-path. */
+  .tip--stretch {
+    display: flex;
+    align-self: stretch;
+    min-width: 0;
+  }
+
+  .tip--stretch .row__pp {
+    flex: 1;
+    align-self: stretch;
+  }
+
+  .tip__pop span {
+    display: block;
+    color: var(--color-dim);
+  }
+
+  /* -------------------------------------------------------------------------------------------
+   * The profile
+   * ----------------------------------------------------------------------------------------- */
+
+  /*
+   * The profile row is a grid with fixed proportions, so switching mode — which changes the play
+   * count, the accuracy digits and whether a rank exists at all — cannot move either panel.
+   */
+  .profile-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+    gap: 12px;
+    align-items: stretch;
+  }
+
+  @media (max-width: 1000px) {
+    .profile-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  /*
+   * The identity panel: picture and name largest, together; every other detail smaller and beside
+   * them. The details are left-aligned so the text and the grade pills share an edge — right-aligning
+   * both made their left edges ragged, which is what read as "scattered".
+   */
+  /*
+   * The identity panel is a **grid**, not a wrapping flex row.
+   *
+   * As a flex row a long username pushed the facts and grade pills onto a second line, which made the
+   * panel taller and left the details stranded under the avatar. Named columns mean a long name
+   * **truncates** instead of reflowing anything, and the country chip stays put beside it.
+   */
+  /*
+   * The identity panel is a flex row of two things: the picture, and a column holding the name and the
+   * facts beside it.
+   *
+   * **Only the name is the centrepiece** — the contents stay left-aligned against the picture. Centring
+   * the whole panel was the wrong reading and was reverted; the reference layout is this one.
+   */
+  /*
+   * Three rows: an empty `1fr` spacer, the name, and the details — the spacer is `1fr` against the
+   * details' `1fr`, so it is always exactly as tall as they are. That is what puts the name on the
+   * box's centre line with the details under it.
+   *
+   * The **picture spans all three rows**, which is what keeps the panel compact: its own row would set
+   * the height to the picture's 104px plus the mirrored details, and the picture is taller than the name
+   * it sits beside. Spanning, the height comes from the name and details alone — 64px less — and the
+   * picture is still centred, filling 63% of the panel. §14.4
+   */
+  .profile {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: 1fr auto 1fr;
+    align-items: center;
+    align-content: center;
+    gap: 4px 16px;
+    padding: 10px 18px;
+  }
+
+  .profile__name {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    grid-column: 2;
+    grid-row: 2;
+    min-width: 0;
+  }
+
+  /* One line, small: the facts on the left, the grade counts at the other end. */
+  .profile__details {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px 12px;
+    grid-column: 2;
+    grid-row: 3;
+    min-width: 0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--color-dim);
+  }
+
+  .profile__stats {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 14px;
+    padding: 14px 22px;
+  }
+
+  /*
+   * The four figures in one row, as before — a 2×2 grid filled the panel but made it tall, and the
+   * whole row has to grow with it. If they do not fit they wrap, which is the honest failure mode.
+   */
+  /*
+   * Spread across the panel rather than packed to the left. Left-packed, the four figures left a pool
+   * of empty space at the panel's right that read as the panel not being filled.
+   */
+  .profile__stats dl {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px 28px;
+  }
+
+  /* A rounded square, per `@border-radius--nav-avatar: 10px`. osu! has no circular avatars. */
+  .avatar {
+    width: 104px;
+    height: 104px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-line);
+    background-color: hsl(240 7% 12%);
+    object-fit: cover;
+  }
+
+  /*
+   * The name is the point of the card, so it is **never** shortened: it takes the whole line, and wraps
+   * onto a second line rather than getting an ellipsis. The facts sit below it either way, which is why
+   * the card's height no longer depends on how long the name is.
+   */
+  .username {
+    font-family: var(--font-display);
+    font-size: 3rem;
+    font-weight: 600;
+    line-height: 1.05;
+    overflow-wrap: anywhere;
+  }
+
+  /* The picture is the way to the real profile. On hover it becomes the osu! logo. */
+  .avatar-link {
+    position: relative;
+    display: block;
+    grid-column: 1;
+    grid-row: 1 / -1;
+    align-self: center;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .avatar-link__mark {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    opacity: 0;
+    transition: opacity 160ms var(--ease-out);
+  }
+
+  /* osu!'s own icon treatment: the white logo on osu!'s pink. */
+  .osu-mark {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+    background-color: #ff66aa;
+  }
+
+  .osu-mark__logo {
+    display: block;
+    width: 78%;
+    height: 78%;
+    color: #ffffff;
+  }
+
+  .osu-mark__logo svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .avatar-link:hover .avatar-link__mark {
+      opacity: 1;
+    }
+  }
+
+  .avatar-link:focus-visible .avatar-link__mark {
+    opacity: 1;
+  }
+
+  /* The rank graph with the exact value under the pointer. It fills its panel — see `RankGraph`, which
+     measures its own width rather than shipping a fixed one. */
+  .rankgraph {
+    position: relative;
+    display: block;
+    width: 100%;
+  }
+
+  .rankgraph__tip {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    transform: translateX(-50%);
+    padding: 3px 7px;
+    border-radius: var(--radius-sm);
+    background-color: hsl(240 12% 7% / 0.97);
+    font-size: 0.72rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  .country {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 9px;
+    border-radius: var(--radius-sm);
+    background-color: hsl(240 7% 24%);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: var(--color-text);
+  }
+
+  /* Grade counts, laid out the way osu!'s own profile does it: a pill carrying the grade colour and
+     the letter, with the count beneath it rather than crammed inside. */
+  .grade-stat {
+    display: grid;
+    justify-items: center;
+    gap: 2px;
+    cursor: default;
+  }
+
+  .grade-pill {
+    display: grid;
+    place-items: center;
+    min-width: 32px;
+    height: 19px;
+    padding: 0 7px;
+    border-radius: var(--radius-pill);
+    font-family: var(--font-display);
+    font-size: 0.78rem;
+    font-weight: 600;
+    line-height: 1;
+    text-shadow: 0 1px 3px hsl(0 0% 0% / 0.35);
+  }
+
+  .grade-stat__count {
+    font-size: 0.7rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The circular way out of the page. */
+  .icon-control {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-pill);
+    background-color: var(--color-panel-strong);
+    color: var(--color-text);
+    transition: background-color 150ms var(--ease-out);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .icon-control:hover {
+      background-color: hsl(240 7% 18% / 0.9);
+    }
+  }
+
+  .stat {
+    display: grid;
+    gap: 3px;
+  }
+
+  .stat__label {
+    font-size: 0.63rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--color-dim);
+  }
+
+  .stat__value {
+    font-family: var(--font-display);
+    font-size: 1.45rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* -------------------------------------------------------------------------------------------
+   * Narrow screens
+   * ----------------------------------------------------------------------------------------- */
+
+  /*
+   * The row's columns are fixed pixel widths — which is exactly what keeps every row's numbers at the
+   * same x, and exactly what made the row 545px wide on any viewport. Rather than letting the page
+   * scroll sideways, the least important columns leave, and the grid template changes with them
+   * because `display: none` removes an item and shifts the rest into earlier tracks.
+   *
+   * The row height stays 86px at every width on purpose: the list is windowed against a constant
+   * 90px pitch, so a variable row height would break the scroll positions.
+   */
+  @media (max-width: 900px) {
+    .row {
+      grid-template-columns: 64px minmax(0, 1fr) 58px 64px 108px;
+      column-gap: 10px;
+    }
+
+    .row__mods {
+      display: none;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .row {
+      grid-template-columns: 56px minmax(0, 1fr) 104px;
+      column-gap: 10px;
+      padding-right: 0;
+    }
+
+    .row__stars,
+    .row__accuracy,
+    /*
+     * The stars' Tip wrapper, not just the text inside it.
+     *
+     * `display: none` on `.row__stars` left the wrapper as a grid item, so it kept occupying a cell
+     * and pushed the pp block into a new implicit row — the pp figure ended up 25px tall in the first
+     * column. Hiding the grid item itself is what removes the cell.
+     */
+    .tip--stars {
+      display: none;
+    }
+
+    .row__grade {
+      width: 56px;
+      border-radius: calc(var(--radius-md) - 1px) 0 0 calc(var(--radius-md) - 1px);
+      font-size: 1.35rem;
+    }
+
+    /*
+     * A phone drops the spacers. They exist to put the picture on the box's centre line, and with the
+     * details wrapping to three lines below it that means 67px of nothing above — dead space, on the
+     * screen with the least of it. Picture and name on one line, everything else under it.
+     */
+    .profile {
+      grid-template-rows: auto auto;
+      gap: 6px 16px;
+    }
+
+    .avatar-link {
+      grid-row: 1;
+    }
+
+    .profile__name {
+      grid-row: 1;
+    }
+
+    .profile__details {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      justify-content: flex-start;
+    }
+
+    .profile__stats dl {
+      gap: 12px 20px;
+    }
+
+    .avatar,
+    .avatar-link {
+      width: 74px;
+      height: 74px;
+    }
+
+    .username {
+      font-size: 2.1rem;
+    }
+
+    /*
+     * On a phone the control row is several lines tall, so a centred count would float halfway down it.
+     * At the top it sits on the same line as the search box, which is where the eye expects it.
+     */
+    .count {
+      align-self: start;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .search {
+      flex: 1 1 100%;
+    }
+  }
+}
+

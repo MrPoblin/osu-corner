@@ -53,7 +53,7 @@ const SCOREVER: &str = "our port of lazer @ 28c846b4 (conversion) + c83737be (#3
 
 /// The index format's own version. Bumped when a file's **shape** changes, never when its contents
 /// do — a rebalance changes every number in the file and no reader needs telling.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 /// The `mode` byte of an `.osr`, and the file each mode's plays go in. All four are always written,
 /// even when empty: a missing file would 404 the fetch, while an empty one is a mode with no plays
@@ -284,6 +284,10 @@ fn mode_file(
             code(play.attributes.rank),
             code(play.attributes.lazer_rank),
             play.played_at,
+            // The play's **mod-adjusted** star rating, appended so every position above keeps its
+            // meaning. The beatmap's own `stars` is deliberately no-mod, and on a DT play the two
+            // are far apart — showing the map's rating next to a modded score was the bug.
+            round(play.attributes.stars, 2),
         ]));
     }
 

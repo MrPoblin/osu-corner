@@ -32,6 +32,8 @@ pub struct Found {
     pub other: u64,
     /// Replays whose header parsed but whose timestamp gives no usable key. Should be zero.
     pub keyless: u64,
+    /// Replays that parsed but belong to another player, and were therefore never staged.
+    pub foreign: u64,
 }
 
 impl Found {
@@ -40,6 +42,7 @@ impl Found {
         self.skipped += other.skipped;
         self.other += other.other;
         self.keyless += other.keyless;
+        self.foreign += other.foreign;
         self
     }
 
@@ -52,7 +55,18 @@ impl Found {
 ///
 /// Whole rather than a head, because a beatmap's MD5 needs every byte and a replay's key sits
 /// after a variable-length string. These files are small and each is read exactly once.
-fn inspect(source: &str, id: String, path: &Path, size: u64, mtime: i64) -> io::Result<Blob> {
+///
+/// **A replay's header names the player, and that name is checked against the configured accounts.**
+/// Without this the library held whatever `.osr` files happened to be in the install — three
+/// replays by other people were sitting in the index as the user's own plays, including the top one.
+fn inspect(
+    source: &str,
+    id: String,
+    path: &Path,
+    size: u64,
+    mtime: i64,
+    user: &[String],
+) -> io::Result<Blob> {
     // Read only the first 64 bytes and classify from those. Most blobs in a lazer store are audio,
     // images or skin files that are neither a beatmap nor a replay, and reading them whole to
     // discover that cost 31 GB on one real store — the whole reason HEAD_LEN exists.
@@ -80,6 +94,8 @@ fn inspect(source: &str, id: String, path: &Path, size: u64, mtime: i64) -> io::
         Classified::Osr => {
             file.read_to_end(&mut bytes)?;
             match osr::parse(&bytes) {
+                // Not this account's replay: filed apart, counted, and never read again.
+                Ok(header) if !is_ours(&header.player, user) => (Kind::Foreign, None, None),
                 Ok(header) => (Kind::Osr, None, header.key()),
                 // The header shape was right but the body was not, so it is filed as not-ours: it
                 // gets counted, and it is never read again.
@@ -102,15 +118,24 @@ fn inspect(source: &str, id: String, path: &Path, size: u64, mtime: i64) -> io::
 fn tally(found: &mut Found, blob: &Blob) {
     match blob.kind {
         Kind::Other => found.other += 1,
+        Kind::Foreign => found.foreign += 1,
         Kind::Osr if blob.key.is_none() => found.keyless += 1,
         _ => {}
     }
 }
 
+/// Whether a replay belongs to one of the configured accounts.
+///
+/// Compared case-insensitively, because osu! usernames are: a replay recorded as `poblin` and a
+/// config that says `Poblin` are the same account.
+fn is_ours(player: &str, names: &[String]) -> bool {
+    names.iter().any(|name| name.eq_ignore_ascii_case(player))
+}
+
 // --------------------------------------------------------------------------------- lazer
 
 /// `files/<a>/<ab>/<sha256>` — 16 shards, then 256 beneath them.
-pub fn lazer(source: &str, root: &Path, known: &Known) -> Result<Found, String> {
+pub fn lazer(source: &str, root: &Path, known: &Known, user: &[String]) -> Result<Found, String> {
     let store = root.join("files");
     if !store.is_dir() {
         return Err(format!(
@@ -131,7 +156,7 @@ pub fn lazer(source: &str, root: &Path, known: &Known) -> Result<Found, String> 
 
     let per_shard = shards
         .par_iter()
-        .map(|shard| scan_shard(source, shard, known))
+        .map(|shard| scan_shard(source, shard, known, user))
         .collect::<Vec<Result<Found, String>>>();
 
     let mut total = Found::default();
@@ -141,7 +166,7 @@ pub fn lazer(source: &str, root: &Path, known: &Known) -> Result<Found, String> 
     Ok(total)
 }
 
-fn scan_shard(source: &str, shard: &Path, known: &Known) -> Result<Found, String> {
+fn scan_shard(source: &str, shard: &Path, known: &Known, user: &[String]) -> Result<Found, String> {
     let mut found = Found::default();
 
     for entry in fs::read_dir(shard).map_err(|e| format!("{}: {e}", shard.display()))? {
@@ -159,7 +184,7 @@ fn scan_shard(source: &str, shard: &Path, known: &Known) -> Result<Found, String
         }
 
         let metadata = entry.metadata().map_err(|e| e.to_string())?;
-        let blob = match inspect(source, id, &entry.path(), metadata.len(), 0) {
+        let blob = match inspect(source, id, &entry.path(), metadata.len(), 0, user) {
             Ok(blob) => blob,
             // A file that vanished between readdir and open is not an error; lazer's cleanup can
             // be running while we look.
@@ -188,7 +213,7 @@ fn dirs_in(dir: &Path) -> io::Result<Vec<PathBuf>> {
 // -------------------------------------------------------------------------------- stable
 
 /// `Songs/**/*.osu` and `Data/r/*.osr`, both named for real.
-pub fn stable(source: &str, root: &Path, known: &Known) -> Result<Found, String> {
+pub fn stable(source: &str, root: &Path, known: &Known, user: &[String]) -> Result<Found, String> {
     if !root.is_dir() {
         return Err(format!(
             "{} does not exist.\n\
@@ -204,7 +229,7 @@ pub fn stable(source: &str, root: &Path, known: &Known) -> Result<Found, String>
         Ok(dirs) => {
             let per_dir = dirs
                 .par_iter()
-                .map(|dir| scan_songs_dir(source, root, dir, known))
+                .map(|dir| scan_songs_dir(source, root, dir, known, user))
                 .collect::<Vec<Result<Found, String>>>();
             for dir in per_dir {
                 found.absorb(dir?);
@@ -219,7 +244,7 @@ pub fn stable(source: &str, root: &Path, known: &Known) -> Result<Found, String>
         Err(error) => return Err(error.to_string()),
     }
 
-    match scan_replay_dir(source, root, &root.join("Data").join("r"), known) {
+    match scan_replay_dir(source, root, &root.join("Data").join("r"), known, user) {
         Ok(replays) => found.absorb(replays),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             println!(
@@ -253,7 +278,13 @@ fn beatmap_dirs(songs: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn scan_songs_dir(source: &str, root: &Path, dir: &Path, known: &Known) -> Result<Found, String> {
+fn scan_songs_dir(
+    source: &str,
+    root: &Path,
+    dir: &Path,
+    known: &Known,
+    user: &[String],
+) -> Result<Found, String> {
     let mut found = Found::default();
 
     for entry in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
@@ -276,7 +307,7 @@ fn scan_songs_dir(source: &str, root: &Path, dir: &Path, known: &Known) -> Resul
             continue;
         }
 
-        let blob = match inspect(source, id, &entry.path(), metadata.len(), mtime) {
+        let blob = match inspect(source, id, &entry.path(), metadata.len(), mtime, user) {
             Ok(blob) => blob,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(format!("{}: {error}", entry.path().display())),
@@ -288,7 +319,13 @@ fn scan_songs_dir(source: &str, root: &Path, dir: &Path, known: &Known) -> Resul
     Ok(found)
 }
 
-fn scan_replay_dir(source: &str, root: &Path, dir: &Path, known: &Known) -> io::Result<Found> {
+fn scan_replay_dir(
+    source: &str,
+    root: &Path,
+    dir: &Path,
+    known: &Known,
+    user: &[String],
+) -> io::Result<Found> {
     let mut found = Found::default();
 
     for entry in fs::read_dir(dir)? {
@@ -308,7 +345,7 @@ fn scan_replay_dir(source: &str, root: &Path, dir: &Path, known: &Known) -> io::
             continue;
         }
 
-        let blob = match inspect(source, id, &entry.path(), metadata.len(), mtime) {
+        let blob = match inspect(source, id, &entry.path(), metadata.len(), mtime, user) {
             Ok(blob) => blob,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),

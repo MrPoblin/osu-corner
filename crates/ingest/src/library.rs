@@ -51,6 +51,7 @@ struct Staged {
 
 pub fn build(
     sources: &[&Source],
+    user: &[String],
     work: &Path,
     mirrors: &[String],
     limit: usize,
@@ -89,6 +90,7 @@ pub fn build(
     let mut inspected = Vec::new();
     let mut skipped = 0u64;
     let mut keyless = 0u64;
+    let mut foreign = 0u64;
 
     for source in sources {
         let key = source.path.display().to_string();
@@ -99,8 +101,8 @@ pub fn build(
         let started = Instant::now();
 
         let found = match source.kind {
-            SourceKind::Lazer => collect::lazer(&key, &source.path, &known)?,
-            SourceKind::Stable => collect::stable(&key, &source.path, &known)?,
+            SourceKind::Lazer => collect::lazer(&key, &source.path, &known, user)?,
+            SourceKind::Stable => collect::stable(&key, &source.path, &known, user)?,
         };
 
         println!("\n{}  ({})", source.path.display(), kind_name(source.kind));
@@ -112,9 +114,20 @@ pub fn build(
             started.elapsed().as_secs_f64()
         );
 
+        // Said out loud rather than folded into "other": a replay by another player is the one
+        // thing here that is a fact about the *library*, not about the install.
+        if found.foreign > 0 {
+            println!(
+                "  {:>7} replays by other players, not staged — check `names` under [[user]] in \
+                 osu-corner.local.toml if that is wrong",
+                found.foreign
+            );
+        }
+
         inspected.extend(found.inspected);
         skipped += found.skipped;
         keyless += found.keyless;
+        foreign += found.foreign;
     }
 
     // Recorded even in a dry run: the ledger is then in memory, so the staging plan below can
@@ -531,6 +544,14 @@ pub fn build(
          [{pricing_seconds:.1}s]  stars {star_low:.2}–{star_high:.2}, pp {pp_low:.1}–{pp_high:.1}"
     );
     println!("  by       {}", pp::ROSU_PP);
+
+    if foreign > 0 {
+        println!(
+            "\n  {foreign} replays in your installs are played by somebody else and were NOT\n  \
+             staged. Add their name to `names` under [[user]] in osu-corner.local.toml if any of\n  \
+             them should be here."
+        );
+    }
 
     if keyless > 0 {
         println!(

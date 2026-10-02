@@ -231,8 +231,17 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // Every account name across every [[user]], because that is what decides whose replays are
+    // staged: the `.osr` header names its player and anything else is refused.
+    let names: Vec<String> = config
+        .user
+        .iter()
+        .flat_map(|user| user.names.iter().cloned())
+        .collect();
+
     match library::build(
         &enabled,
+        &names,
         &work,
         &config.mirrors.urls,
         fetch_limit,
