@@ -18,7 +18,7 @@
 
 use crate::collect::{self, Known};
 use crate::ledger::{Blob, Kind, Ledger};
-use crate::mirror::{Fetched, Fetcher};
+use crate::mirror::{Fetched, Fetcher, Mirror};
 use crate::{Source, SourceKind, User};
 use crate::{index, pp, profile, store};
 use osu_core::{osr, osu};
@@ -61,7 +61,7 @@ struct Staged {
 pub fn refresh_profiles(
     accounts: &[User],
     work: &Path,
-    mirrors: &[String],
+    mirrors: &[Mirror],
     bucket: Option<&store::Store>,
     dry_run: bool,
 ) -> Result<(), String> {
@@ -119,7 +119,7 @@ pub fn build(
     sources: &[&Source],
     accounts: &[User],
     work: &Path,
-    mirrors: &[String],
+    mirrors: &[Mirror],
     limit: usize,
     bucket: Option<&store::Store>,
     dry_run: bool,
@@ -669,12 +669,14 @@ pub fn build(
 
         if !unknown.is_empty() {
             println!(
-                "\n  {unknown_n} beatmaps, carrying {plays} of {total} plays, are **not known to\n  \
-                 osu!** and will not be asked about again. Their replays are staged but cannot be\n  \
-                 priced, because the map a score was set on is not on this machine.\n  \
-                 This is not proof the map is deleted — the checksum lookup does not serve\n  \
-                 unranked or graveyarded maps, and the mirrors do carry those — only that the map\n  \
-                 cannot be named from here. Each play still carries its own mode, mods and score.\n  \
+                "\n  {unknown_n} beatmaps, carrying {plays} of {total} plays, are **unknown to every\n  \
+                 mirror able to look a checksum up** and will not be asked about again. Their\n  \
+                 replays are staged but cannot be priced, because the map a score was set on is\n  \
+                 not on this machine.\n  \
+                 This is not proof the map is deleted — a mirror reports a map it does not hold\n  \
+                 as missing whether or not the map still exists, so a playable map can be\n  \
+                 unnameable from here — only that nothing here could name it. Each play still\n  \
+                 carries its own mode, mods and score.\n  \
                  To ask again, delete {ledger} and run once more.\n  \
                  First few: {first}",
                 ledger = work.join("state.db").display(),
@@ -712,10 +714,11 @@ pub fn build(
 
     if !unheld.is_empty() && !fetcher.configured() {
         println!(
-            "\n  {n} beatmaps are on no disk and were **not looked for**, because fetching them\n  \
-             needs an osu! application: put OSU_CLIENT_ID and OSU_CLIENT_SECRET in .dev.vars\n  \
-             beside the config and run again. Their replays are staged meanwhile, and nothing\n  \
-             else about the run changes.",
+            "\n  {n} beatmaps are on no disk and were **not looked for**: none of the configured\n  \
+             mirrors can look a beatmap up by checksum, and that hop is what makes them\n  \
+             reachable at all. Add one that can to [mirrors] in the config — the committed\n  \
+             default carries an example — and run again. Their replays are staged meanwhile,\n  \
+             and nothing else about the run changes.",
             n = unheld.len()
         );
     }

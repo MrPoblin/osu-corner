@@ -92,7 +92,25 @@ struct Storage {
 
 #[derive(Deserialize)]
 struct Mirrors {
-    urls: Vec<String>,
+    urls: Vec<mirror::Mirror>,
+}
+
+/// The mirror list as one line, marking the ones that can look a beatmap up by checksum.
+///
+/// **A list with none of them is a working config that fetches nothing**, so when it happens it is
+/// worth seeing here, before the run, rather than only in a report at the end of it.
+fn mirrors_line(mirrors: &[mirror::Mirror]) -> String {
+    mirrors
+        .iter()
+        .map(|mirror| {
+            if mirror.can_resolve() {
+                format!("{}+md5", mirror.url())
+            } else {
+                mirror.url().to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn main() -> ExitCode {
@@ -169,7 +187,7 @@ fn main() -> ExitCode {
     for user in &config.user {
         println!("  account {} — {:?}", user.id, user.names);
     }
-    println!("  mirrors: {}", config.mirrors.urls.join(", "));
+    println!("  mirrors: {}", mirrors_line(&config.mirrors.urls));
 
     let storage = if config.storage.public_base.is_empty() || config.storage.bucket.is_empty() {
         "serving host not configured yet".to_owned()
@@ -221,17 +239,15 @@ fn main() -> ExitCode {
         };
     }
 
-    // Whether a beatmap no install holds can be fetched needs the osu! application's credentials.
-    // Absence is a supported state, not a failure — it is what a fresh clone looks like.
+    // Whether a beatmap no install holds can be looked up is a property of the **mirror list**, not
+    // of the osu! application: the checksum hop is a mirror's now and needs no token (§16), which
+    // is what makes a clone with no osu! application fetch maps exactly as well as one with.
     println!(
         "  fetching: {}",
-        if work
-            .parent()
-            .is_some_and(|dir| dir.join(".dev.vars").exists())
-        {
+        if config.mirrors.urls.iter().any(mirror::Mirror::can_resolve) {
             "on — a beatmap no install holds is fetched and MD5-verified"
         } else {
-            "off — no .dev.vars, so such maps are reported rather than fetched"
+            "off — no mirror lists an md5 route, so such maps are reported rather than fetched"
         }
     );
 
@@ -285,8 +301,9 @@ fn print_help() {
          folders, so it needs no installs — this is what a scheduled run uses.\n    \
          --fetch-limit N\n                \
          how many beatmaps no install holds to look for this run\n                \
-         (default 100; 0 means no limit). Each takes about a second,\n                \
-         paced to the osu! API, and the rest wait until the next run.\n    \
+         (default 100; 0 means no limit). Each costs a couple of seconds,
+                \
+         paced to a request a second, and the rest wait until the next run.\n    \
          -h, --help  show this\n\n\
          Reads the game folders. Writes only inside library/ beside the config."
     );
@@ -380,6 +397,56 @@ mod tests {
         );
     }
 
+    /// The committed list is the one everybody actually runs, so this asserts it can **work** rather
+    /// than merely parse. `Mirror` is an untagged enum, which is exactly the kind of deserialization
+    /// that succeeds by quietly picking the wrong variant — and a mirror list that parses but cannot
+    /// resolve is a config that looks fine and fetches nothing.
+    #[test]
+    fn the_committed_mirrors_can_resolve_and_keep_their_fallbacks() {
+        let config: Config = toml::from_str(include_str!("../../../osu-corner.toml"))
+            .expect("osu-corner.toml must parse");
+
+        let resolver = config
+            .mirrors
+            .urls
+            .iter()
+            .find(|mirror| mirror.can_resolve())
+            .expect("the committed list must be able to look a checksum up");
+
+        // A raw `.osu` where other mirrors serve none, which is the whole reason the config carries
+        // routes rather than bare base URLs.
+        assert_eq!(resolver.osu(1), format!("{}/api/osu/1", resolver.url()));
+        assert!(
+            resolver
+                .resolve("abc")
+                .is_some_and(|url| url.contains("abc")),
+            "the md5 route must carry the checksum"
+        );
+        assert!(
+            config.mirrors.urls.len() >= 3,
+            "that mirror's own cascade excludes catboy.best and Nerinyan, so it needs fallbacks"
+        );
+    }
+
+    /// A routed mirror has to survive the merge as a whole array, like the bare ones: a local file
+    /// that sets its own list replaces the committed one rather than being appended to it.
+    #[test]
+    fn a_routed_mirror_parses_from_a_config_and_replaces_wholesale() {
+        let config: Config = toml::from_str(
+            "[site]\nname = 'x'\n[storage]\npublic_base = ''\nbucket = ''\n\
+             [mirrors]\nurls = [{ url = 'https://with.routes', osu = '/raw/{id}', md5 = '/lookup/{md5}' }]\n",
+        )
+        .expect("a routed mirror must parse");
+
+        assert_eq!(config.mirrors.urls.len(), 1);
+        assert_eq!(
+            config.mirrors.urls[0].osu(7),
+            "https://with.routes/raw/7",
+            "the named route wins over the common shape"
+        );
+        assert!(config.mirrors.urls[0].can_resolve());
+    }
+
     #[test]
     fn tables_merge_and_arrays_replace() {
         let mut base = parse(
@@ -408,11 +475,8 @@ mod tests {
             config.storage.region, "us-west-004",
             "the signed region survives"
         );
-        assert_eq!(
-            config.mirrors.urls,
-            vec!["https://default"],
-            "an untouched array survives"
-        );
+        assert_eq!(config.mirrors.urls.len(), 1, "an untouched array survives");
+        assert_eq!(config.mirrors.urls[0].url(), "https://default");
         assert_eq!(config.source.len(), 1, "arrays replace, they do not append");
         assert_eq!(config.source[0].path, PathBuf::from("/real"));
         assert_eq!(config.source[0].kind, SourceKind::Stable);

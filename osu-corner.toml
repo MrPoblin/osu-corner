@@ -40,7 +40,28 @@ region = ""
 [mirrors]
 # Tried in order, for the two things this project does not host: the .osu file and the audio.
 # Must match the CSP in apps/corner/public/_headers.
-urls = ["https://osu.direct", "https://catboy.best"]
+#
+# A bare string is a mirror that serves `{base}/osu/{id}` and cannot look a beatmap up by checksum.
+# A table names its own routes when they differ, and claims `md5` when it can turn a checksum into a
+# beatmap id — and **that hop is what makes a map no install holds reachable at all**, so a list in
+# which nothing claims it fetches no such maps and says so rather than reporting them as deleted.
+#
+# The first entry goes first because it is the one that resolves, and because it aggregates the
+# others: one endpoint racing eight sources, with circuit breakers. It is still not the whole list,
+# for two reasons it documents itself — its cascade deliberately excludes catboy.best (out of
+# respect for its maintainer) and Nerinyan (which consumes that cascade), so some maps are
+# reachable only through the mirrors below it; and it is a single machine, so it does not survive
+# losing it. A cascade protects against a mirror's upstreams failing, not against the mirror.
+urls = [
+  # Routes verified against the live service: the raw .osu sits at `/api/osu/{id}` — the `/osu/{id}`
+  # every other mirror uses answers 404 here — and the checksum hop uses the batch route, which
+  # separates "does not hold it" from "could not answer right now". The single-MD5 route collapses
+  # those into one bare 404, and recording the second as the first would stop this project ever
+  # asking again.
+  { url = "https://mirror.hinamizawa.ai", osu = "/api/osu/{id}", md5 = "/v3/osu/beatmaps/batch?md5={md5}" },
+  "https://osu.direct",
+  "https://catboy.best",
+]
 
 # ---------------------------------------------------------------------------------------------
 # In osu-corner.local.toml, in this shape:

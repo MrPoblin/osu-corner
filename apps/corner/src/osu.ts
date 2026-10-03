@@ -452,12 +452,19 @@ export function apiMode(mode: string): string {
 /**
  * The accent for a play, derived from its star rating.
  *
- * The brief asked for an accent drawn from the background artwork. That is **not possible in the
- * browser**: `assets.ppy.sh` returns no `Access-Control-Allow-Origin` (verified against the live
- * response headers), so drawing a cover to a canvas taints it and `getImageData` throws. The only
- * routes to real artwork colour are a Worker proxy or an ingest-side pass, both of which are bigger
- * than they look, so the accent comes from the star ramp instead — which is content-derived, comes
- * from osu!'s own palette, and means the page changes hue as you move between difficulties.
+ * The brief asked for an accent drawn from the background artwork. That is **not possible from
+ * osu!'s CDN**: `assets.ppy.sh` returns no `Access-Control-Allow-Origin` (verified against the live
+ * response headers, with and without an `Origin`), so drawing a cover to a canvas taints it and
+ * `getImageData` throws.
+ *
+ * **The wall became bypassable on 2026-10-03, and this accent predates that.**
+ * `GET /v3/osu/beatmaps/proxy-image?url=…` on the mirror returns the *identical bytes* — measured,
+ * same length, same JPEG — with `Access-Control-Allow-Origin: *`, so the artwork's colour is one
+ * fetch away rather than impossible. **Sampled colour is still not what ships, and that is now a
+ * choice rather than a constraint**: it would make the page's hue depend on whatever a mapper put in
+ * their background, where the star ramp is content-derived, comes from osu!'s own palette, and
+ * changes as you move between difficulties. Left as it is deliberately; the route exists if it is
+ * ever wanted.
  *
  * Adjusted rather than used raw: the bottom of the ramp is near-grey and the top is a pale mint or
  * lemon, and neither reads as an accent on a dark panel. Saturation is floored and lightness pulled

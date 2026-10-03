@@ -6,9 +6,10 @@
 #   img-src https://assets.ppy.sh
 #     Cover art. No CORS restriction, 28-day cache, so the browser fetches it directly.
 #
-#   connect-src / media-src https://osu.direct https://catboy.best
-#     The .osu file and the audio, which this project does not host. Must match
-#     [mirrors] in osu-corner.toml.
+#   connect-src / media-src https://mirror.hinamizawa.ai https://osu.direct https://catboy.best
+#     The .osu file and the audio, which this project does not host. Must match the host list in
+#     [mirrors] of osu-corner.toml — every host named there needs an entry here, or its fetches fail
+#     silently and it looks like the mirror is down.
 #
 #   connect-src / media-src __STORAGE_ORIGIN__
 #     The replay `.osr` files and the index, fetched by the browser straight from the bucket's own
@@ -26,7 +27,7 @@
 # rely on. HSTS omits `preload` deliberately — submission is effectively irreversible.
 
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://assets.ppy.sh; font-src 'self'; connect-src 'self' https://osu.direct https://catboy.best __STORAGE_ORIGIN__; media-src 'self' https://osu.direct https://catboy.best __STORAGE_ORIGIN__; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://assets.ppy.sh; font-src 'self'; connect-src 'self' https://mirror.hinamizawa.ai https://osu.direct https://catboy.best __STORAGE_ORIGIN__; media-src 'self' https://mirror.hinamizawa.ai https://osu.direct https://catboy.best __STORAGE_ORIGIN__; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()
