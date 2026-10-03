@@ -113,3 +113,7 @@ cargo fmt --all --check
 
 `pnpm preview` needs the Worker built first: `cd crates/worker && worker-build --release`, then
 `pnpm preview` from the root.
+
+## AI Slop Disclosure
+
+AI coding was used while making this project.

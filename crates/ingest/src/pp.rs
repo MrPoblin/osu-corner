@@ -488,7 +488,15 @@ mod tests {
         );
     }
 
+    /// How often the derived lazer letter agrees with the letter the `.osr` itself recorded.
+    ///
+    /// A measurement, not a check: it reads the staged replays out of `library/`, which exists only
+    /// on a machine that has run an ingest. Ignored rather than skipped-if-absent on purpose — a
+    /// test that quietly does nothing in CI is a green tick proving nothing, which is the failure
+    /// this file's sibling `probe.rs` exists to avoid. Run it where the data is, with
+    /// `cargo test -p osu-ingest -- --ignored`.
     #[test]
+    #[ignore = "needs staged replays in library/"]
     fn temporary_do_we_reproduce_lazers_own_letters() {
         use std::fs;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library");
