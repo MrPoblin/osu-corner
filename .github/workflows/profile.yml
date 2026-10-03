@@ -1,0 +1,74 @@
+name: profile
+
+# Refresh the published profile snapshot, hourly, without anyone touching anything.
+#
+# **Why this exists.** The card has two sources: `/api/osu/profile` (the Worker, live) and
+# `profile-<mode>.json` (a snapshot in the store). The Worker's upstream call leaves from
+# Cloudflare's **shared egress addresses**, and osu! rate-limits **per IP** — so there are windows,
+# measured in hours, in which the route cannot reach the API at all and answers `503` however
+# correct its code is (api plan §5). A card that cannot be refreshed cannot be *updated*, and rank
+# moves whether anyone is watching or not: it is other people playing. So the half that must not
+# depend on Cloudflare's address runs here, on a runner's address, on a schedule.
+#
+# `--profile-only` reads no game folders, so this needs no osu! install and finishes in seconds.
+on:
+  schedule:
+    # Hourly, matching the Worker's own freshness window so the two agree about how old "current"
+    # is. The minute is deliberately not :00 — GitHub queues the top of the hour hardest.
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+# Least privilege: this job writes to the store, never to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: profile-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: refresh
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # `rust-toolchain.toml` pins the compiler and declares the components and the wasm target,
+      # so `rustup show` installs all of it and no third-party Rust setup action is needed.
+      - name: Install toolchain
+        run: rustup show
+
+      # The same key the other workflows use, so this job warms the cache the deploy job then
+      # restores. Without it an hourly `--release` build would be minutes instead of seconds.
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # **The two gitignored files, verbatim.** Repository secrets rather than a config assembled
+      # from variables, so CI runs exactly the merge a local run does — the failure a hand-written
+      # config would produce is a silent one: `[storage]` present but the account missing, and a run
+      # that cheerfully publishes nothing while reporting success.
+      #
+      # `osu-corner.local.toml` needs `[[user]] id` and `[storage]` (`public_base`, `bucket`,
+      # `endpoint`, `region`). `[[source]]` entries are harmless — `--profile-only` never reads
+      # them — so your own file can be copied across unchanged.
+      - name: Materialise the local config
+        env:
+          LOCAL_TOML: ${{ secrets.OSU_CORNER_LOCAL_TOML }}
+          DEV_VARS: ${{ secrets.OSU_CORNER_DEV_VARS }}
+        run: |
+          printf '%s\n' "$LOCAL_TOML" > osu-corner.local.toml
+          printf '%s\n' "$DEV_VARS" > .dev.vars
+
+      - name: Refresh and publish the profile
+        run: cargo run --release -p osu-ingest -- --profile-only

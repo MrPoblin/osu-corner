@@ -822,6 +822,7 @@ name = "osu-worker"
 version = "0.1.0"
 dependencies = [
  "corner-core",
+ "osu-core",
  "serde",
  "serde_json",
  "worker",

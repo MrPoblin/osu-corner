@@ -14,3 +14,6 @@ worker.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 corner-core.workspace = true
+# For the profile projection. `osu-core` is pure data and wasm32-clean by design, so the Worker can
+# hold it; the projection lives there because `osu-ingest` publishes the same shape (osu-core §profile).
+osu-core.workspace = true

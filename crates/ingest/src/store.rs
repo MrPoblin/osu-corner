@@ -20,6 +20,7 @@
 use crate::devvars;
 use crate::index;
 use crate::ledger::{Ledger, Published};
+use crate::profile;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -34,6 +35,21 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const DEFAULT_REGION: &str = "auto";
 const SERVICE: &str = "s3";
 
+/// What the ledger records for an index file: the bytes **and** the header they are published
+/// with, because the header is part of the object.
+///
+/// Digging only the bytes would make a metadata fix unshippable — the object is unchanged, so the
+/// run skips it, and the old `cache-control` stays on the bucket forever. That is not hypothetical:
+/// the four index files were published as `immutable, max-age=31536000` and would still be, so a
+/// cache would hold the first index it ever saw. Changing this value is what forces the re-upload.
+fn artifact_digest(body: &[u8], cache_control: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(body);
+    hasher.update(b"\0");
+    hasher.update(cache_control.as_bytes());
+    osu_core::hex(&hasher.finalize())
+}
+
 /// A bucket to upload to, and the credentials to do it with.
 pub struct Store {
     pub endpoint: String,
@@ -46,6 +62,23 @@ pub struct Store {
     secret_access_key: String,
     agent: ureq::Agent,
 }
+
+/// A replay's object key is content-addressed — map hash plus score timestamp — and a replay is
+/// never rewritten under the same name, so a year of `immutable` is honest. It also matters beyond
+/// speed: an edge cache HIT never reaches the store, so a repeat or abusive request for an object
+/// already cached costs **no Class B operation**, which is the cheapest abuse mitigation here.
+///
+/// This does *not* retroactively apply to objects uploaded before it, so the zone's cache rule must
+/// set its own edge TTL as well.
+const REPLAY_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+
+/// The objects written to the **same key** over and over: `index-<mode>.json` and
+/// `profile-<mode>.json`, both replaced by every ingest.
+///
+/// Marking those `immutable` would strand every cache — edge and browser — on the first copy ever
+/// published, so a new play, or a new rank, would never appear. Five minutes fresh with a day of
+/// stale-while-revalidate is short enough that a cache cannot hide an ingest.
+const REWRITTEN_CACHE_CONTROL: &str = "public, max-age=300, stale-while-revalidate=86400";
 
 impl Store {
     /// Built from the config's `storage.endpoint`, `storage.bucket` and `storage.region` plus the two `STORAGE_*`
@@ -109,7 +142,7 @@ impl Store {
     /// exceptional — and without a retry the first one aborts the run with 7,000 objects still to go.
     /// Only failures the service is *telling* us are temporary are retried: a `403` from a wrong
     /// region or a `404` is a mistake, and repeating it would just spend the same seconds again.
-    fn put(&self, object: &str, body: &[u8]) -> Result<(), String> {
+    fn put(&self, object: &str, body: &[u8], cache_control: &str) -> Result<(), String> {
         let url = format!(
             "{}/{}/{}",
             self.endpoint,
@@ -144,14 +177,9 @@ impl Store {
                 .header("x-amz-date", &amz_date)
                 .header("x-amz-content-sha256", &signed.payload_hash)
                 .header("content-type", "application/octet-stream")
-                // **Object keys are content-addressed and immutable, so say so.** A replay is never
-                // rewritten under the same name, which is what makes a year-long immutable cache honest
-                // — and it matters beyond speed: an edge cache HIT never reaches the store at all, so a repeat
-                // or abusive request for an object already cached costs **no Class B operation**. That is
-                // the cheapest abuse mitigation this project has, and it only works if the cache is
-                // allowed to hold the bytes. This does *not* retroactively apply to objects already
-                // uploaded without it, so the zone's cache rule must set its own edge TTL.
-                .header("cache-control", "public, max-age=31536000, immutable")
+                // Per object, not per bucket: a replay may be cached for a year because it can never
+                // change, and the index must not be, because it changes every run.
+                .header("cache-control", cache_control)
                 .send(body);
 
             match sent {
@@ -204,6 +232,8 @@ pub struct Report {
     pub replays_skipped: u64,
     pub index: u64,
     pub index_skipped: u64,
+    pub profile: u64,
+    pub profile_skipped: u64,
     pub bytes: u64,
 }
 
@@ -238,7 +268,7 @@ pub fn upload(
         let file = format!("index-{name}.json");
         let body = std::fs::read(work.join(&file))
             .map_err(|error| format!("cannot read {}: {error}", work.join(&file).display()))?;
-        let digest = osu_core::hex(&Sha256::digest(&body));
+        let digest = artifact_digest(&body, REWRITTEN_CACHE_CONTROL);
 
         if ledger.artifact(&file)?.as_deref() == Some(digest.as_str()) {
             report.index_skipped += 1;
@@ -246,7 +276,7 @@ pub fn upload(
         }
 
         if !dry_run {
-            bucket.put(&file, &body)?;
+            bucket.put(&file, &body, REWRITTEN_CACHE_CONTROL)?;
             artifacts.push((file, digest));
         }
         report.index += 1;
@@ -259,6 +289,16 @@ pub fn upload(
         commit_artifacts(ledger, &mut artifacts)?;
     }
 
+    // ------------------------------------------------------- the profile snapshot
+    //
+    // Rewritten every run like the index, so it carries the same short cache rather than the
+    // replays' year. A missing file is skipped rather than being an error: a ruleset osu! did not
+    // answer for keeps whatever the bucket already holds, and a clone with no osu! credentials
+    // never produces one at all.
+    let profiles = upload_profiles(ledger, work, bucket, dry_run)?;
+    report.profile = profiles.profile;
+    report.profile_skipped = profiles.profile_skipped;
+    report.bytes += profiles.bytes;
     // ---------------------------------------------------------------- the replays
     let published = ledger.published()?;
     let mut rows: Vec<Published> = Vec::new();
@@ -283,7 +323,7 @@ pub fn upload(
             // A failure here records everything uploaded so far, so the next run resumes rather
             // than starting again — which is the whole reason the ledger is written from the
             // successes and not up front.
-            if let Err(error) = bucket.put(object, &body) {
+            if let Err(error) = bucket.put(object, &body, REPLAY_CACHE_CONTROL) {
                 commit_rows(ledger, &mut rows)?;
                 commit_artifacts(ledger, &mut artifacts)?;
                 return Err(error);
@@ -314,6 +354,52 @@ pub fn upload(
     }
 
     Ok(Some(report))
+}
+
+/// Publish the profile snapshots, and nothing else.
+///
+/// Separate from [`upload`] because a **scheduled** run refreshes only these: it has no game
+/// installs to walk and no index to rebuild, so it finishes in seconds — and running it somewhere
+/// osu! will answer is the entire point of it (`--profile-only`).
+///
+/// The ledger is the skip list, keyed by the digest of the bytes **and** their header. Note what
+/// the stamp does to that: the bytes change on every successful fetch, so in practice each run
+/// re-sends four ~1 KB objects. That is the intent rather than a leak — the timestamp *is* the
+/// point, and four kilobytes an hour is nothing.
+pub fn upload_profiles(
+    ledger: &mut Ledger,
+    work: &Path,
+    bucket: &Store,
+    dry_run: bool,
+) -> Result<Report, String> {
+    let mut report = Report::default();
+    let mut artifacts: Vec<(String, String)> = Vec::new();
+
+    for mode in profile::MODES {
+        let file = format!("profile-{mode}.json");
+        let Ok(body) = std::fs::read(work.join(&file)) else {
+            continue;
+        };
+        let digest = artifact_digest(&body, REWRITTEN_CACHE_CONTROL);
+
+        if ledger.artifact(&file)?.as_deref() == Some(digest.as_str()) {
+            report.profile_skipped += 1;
+            continue;
+        }
+
+        if !dry_run {
+            bucket.put(&file, &body, REWRITTEN_CACHE_CONTROL)?;
+            artifacts.push((file, digest));
+        }
+        report.profile += 1;
+        report.bytes += body.len() as u64;
+    }
+
+    if !dry_run {
+        commit_artifacts(ledger, &mut artifacts)?;
+    }
+
+    Ok(report)
 }
 
 /// How many uploaded objects are recorded at once.
@@ -559,6 +645,29 @@ mod tests {
         assert_eq!(civil_from_days(-1), (1969, 12, 31), "and before the epoch");
     }
 
+    /// One word wrong here is silent, year-long staleness on every new ingest, so it gets a guard.
+    #[test]
+    fn the_index_is_never_uploaded_immutable() {
+        assert!(!REWRITTEN_CACHE_CONTROL.contains("immutable"));
+        assert!(REPLAY_CACHE_CONTROL.contains("immutable"));
+    }
+
+    /// The skip list has to notice a metadata-only change, or the header above never reaches a
+    /// bucket that already holds the object.
+    #[test]
+    fn an_index_digest_changes_with_its_header_alone() {
+        let body = b"[]";
+        assert_ne!(
+            artifact_digest(body, REWRITTEN_CACHE_CONTROL),
+            artifact_digest(body, REPLAY_CACHE_CONTROL)
+        );
+        assert_eq!(
+            artifact_digest(body, REWRITTEN_CACHE_CONTROL),
+            artifact_digest(body, REWRITTEN_CACHE_CONTROL),
+            "and is otherwise stable"
+        );
+    }
+
     /// The first run of an upload: what it plans, and what a second run then skips.
     ///
     /// A dry run never touches the network, which is exactly why this can be a test: it reads the
@@ -575,6 +684,9 @@ mod tests {
         for (_, name) in index::MODES {
             std::fs::write(work.join(format!("index-{name}.json")), b"[]").unwrap();
         }
+
+        // One profile snapshot, so the second rewritten-object path is planned and skipped too.
+        std::fs::write(work.join("profile-osu.json"), b"{}").unwrap();
 
         // One play osu! has an id for, and one it does not — the two shapes of object key.
         let keyed = "477990bba544108ad74438ac77f937ea-133295220694499848";
@@ -603,10 +715,12 @@ mod tests {
             .expect("a configured bucket reports");
 
         assert_eq!(first.index, 4, "all four index files, all new");
+        assert_eq!(first.profile, 1, "the one profile snapshot, new");
         assert_eq!(first.replays, 2, "both replays, both new");
         assert_eq!(first.replays_skipped, 0);
         assert_eq!(first.index_skipped, 0);
-        assert_eq!(first.bytes, 4 * 2 + 2 * 40, "every byte it would send");
+        assert_eq!(first.profile_skipped, 0);
+        assert_eq!(first.bytes, 4 * 2 + 2 + 2 * 40, "every byte it would send");
 
         // A dry run records nothing, so a second dry run plans exactly the same thing — which is
         // the property that makes `--dry-run` worth trusting.
@@ -637,9 +751,16 @@ mod tests {
             let file = format!("index-{name}.json");
             let body = std::fs::read(work.join(&file)).unwrap();
             ledger
-                .record_artifact(&file, &osu_core::hex(&Sha256::digest(&body)))
+                .record_artifact(&file, &artifact_digest(&body, REWRITTEN_CACHE_CONTROL))
                 .unwrap();
         }
+        let profile = std::fs::read(work.join("profile-osu.json")).unwrap();
+        ledger
+            .record_artifact(
+                "profile-osu.json",
+                &artifact_digest(&profile, REWRITTEN_CACHE_CONTROL),
+            )
+            .unwrap();
 
         let settled = upload(&mut ledger, &work, &objects, Some(&bucket), true)
             .unwrap()
@@ -648,6 +769,11 @@ mod tests {
         assert_eq!(settled.replays_skipped, 2);
         assert_eq!(settled.index, 0, "an unchanged index is not sent again");
         assert_eq!(settled.index_skipped, 4);
+        assert_eq!(
+            settled.profile, 0,
+            "an unchanged snapshot is not sent again"
+        );
+        assert_eq!(settled.profile_skipped, 1);
         assert_eq!(settled.bytes, 0);
 
         // And with no bucket configured, nothing is planned and nothing is an error.

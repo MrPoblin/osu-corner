@@ -11,6 +11,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { storageBase } from "./storage-base.mjs";
+
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(appRoot, "dist");
 const target = join(dist, "_headers");
@@ -40,30 +42,21 @@ mkdirSync(dirname(target), { recursive: true });
  * the index and the replays from (§9). It is not written into `_headers` because that file is
  * committed and the hostname is per-deployment — a clone must not inherit somebody else's (§14).
  *
- * It is read from the config rather than an environment variable so there is exactly one source of
- * truth: the same `storage.public_base` the ingest writes into the index header. Deliberately not a
- * TOML parser — it is one key in files this repository writes itself, and a parser would mean either
- * a new dependency or reimplementing the local-overrides-committed merge, which is how the two sides
- * would drift apart. The local file is checked first, exactly as the merge does.
- *
- * Empty is a supported state, not a failure: a deployment serving the replays as its own static
- * assets needs no entry at all. It says so either way, because getting this wrong is silent.
+ * The value comes from `storage-base.mjs`, the same reader `vite.config.ts` uses to point the index
+ * fetch at the storage host, so the CSP cannot allow one host while the frontend fetches another.
+ * Empty is a supported state, not a failure: a deployment serving the index as its own static asset
+ * needs no entry at all. It says so either way, because getting this wrong is silent.
  */
 function storageOrigin() {
-  const root = resolve(appRoot, "..", "..");
-  for (const name of ["osu-corner.local.toml", "osu-corner.toml"]) {
-    const file = join(root, name);
-    if (!existsSync(file)) continue;
-    const found = readFileSync(file, "utf8").match(/^\s*public_base\s*=\s*"([^"]*)"/m);
-    if (found === null || found[1].trim() === "") continue;
-    try {
-      return new URL(found[1]).origin; // the CSP wants an origin; a path in it would be ignored
-    } catch {
-      console.error(`! ${name}: public_base "${found[1]}" is not a URL, so it is not in the CSP`);
-      return "";
-    }
+  const base = storageBase();
+  if (base === "") return "";
+
+  try {
+    return new URL(base).origin; // the CSP wants an origin; a path in it would be ignored
+  } catch {
+    console.error(`! storage.public_base "${base}" is not a URL, so it is not in the CSP`);
+    return "";
   }
-  return "";
 }
 
 const text = readFileSync(source, "utf8");

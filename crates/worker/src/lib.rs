@@ -11,6 +11,7 @@
 //! osu-derived route takes a leaf here rather than a new top-level name, and nothing that is not
 //! about osu belongs under the prefix.
 
+use corner_core::Store;
 use worker::*;
 
 mod profile;
@@ -100,7 +101,13 @@ async fn serve_profile(req: &Request, ctx: &RouteContext<Context>) -> Result<Res
     // One retry with a fresh token is the difference between a broken card and a working one; a
     // second 401 means the credentials are wrong, which retrying cannot fix.
     for attempt in 0..2 {
-        let bearer = token::bearer(&ctx.env, &tokens, now).await?;
+        // A token this Worker cannot obtain must not fail a request the store can already answer.
+        // osu! throttling the token endpoint is exactly when the last good copy is worth serving,
+        // and exchanging a token would not have changed the body anyway.
+        let bearer = match token::bearer(&ctx.env, &tokens, now).await {
+            Ok(bearer) => bearer,
+            Err(problem) => return cached(&profiles, &key, problem).await,
+        };
 
         let fetched = corner_core::get_or_fetch(
             &transport,
@@ -132,8 +139,9 @@ async fn serve_profile(req: &Request, ctx: &RouteContext<Context>) -> Result<Res
                 }
 
                 // The **upstream** body is what got cached, not this projection, so the allowlist
-                // can change without flushing anything.
-                return project(&outcome.body);
+                // can change without flushing anything. The age is stamped on the way out, from
+                // the entry the body came from.
+                return project(&outcome.body, outcome.fetched_at);
             }
             Err(corner_core::Error::Upstream(401)) if attempt == 0 => token::evict(&tokens).await,
             Err(error) => return Err(error.into()),
@@ -144,15 +152,36 @@ async fn serve_profile(req: &Request, ctx: &RouteContext<Context>) -> Result<Res
 }
 
 /// Answer with the allowlisted subset, so nothing osu! adds later is published before anyone has
-/// seen it.
-fn project(body: &str) -> Result<Response, Failure> {
+/// seen it, stamped with the instant the body was fetched.
+fn project(body: &str, fetched_at: i64) -> Result<Response, Failure> {
     let kept = profile::project(body).ok_or(Failure::Shape)?;
+    // A cache entry lives for a week, so a body can be served long after it was fetched. The card
+    // shows the age rather than presenting a week-old rank as current — which is also the only way
+    // a silent stop in the refresh ever becomes visible.
+    let kept = profile::with_fetched_at(&kept, fetched_at).ok_or(Failure::Shape)?;
 
     let response =
         Response::from_body(ResponseBody::Body(kept.into_bytes())).map_err(|_| Failure::Shape)?;
-    header(response.headers(), "Content-Type", "application/json")?;
+    let headers = response.headers();
+    header(headers, "Content-Type", "application/json")?;
+    // The browser's copy, not the store's: without this a refresh or a revisit re-requests the
+    // profile every time. `_headers` cannot help here — it applies to static assets, not to a
+    // Worker's own responses.
+    header(headers, "Cache-Control", profile::BROWSER_CACHE_CONTROL)?;
+    header(headers, "X-Content-Type-Options", "nosniff")?;
 
     Ok(response)
+}
+
+/// The stored body for `key`, or `problem` when there is nothing stored to stand in.
+///
+/// Used where a failure happens **before** the store was consulted — a token that could not be
+/// minted, or credentials osu! rejected — so that a cached profile is still an answer.
+async fn cached(store: &CacheApiStore, key: &str, problem: Failure) -> Result<Response, Failure> {
+    match store.read(key).await {
+        Ok(Some(entry)) => project(&entry.body, entry.fetched_at),
+        _ => Err(problem),
+    }
 }
 
 /// The `mode` query parameter, if the caller asked for one.
@@ -230,7 +259,14 @@ impl Failure {
                 (500, serde_json::json!({ "error": "credentials_rejected" }))
             }
             Self::Upstream => (502, serde_json::json!({ "error": "upstream_unavailable" })),
-            Self::RateLimited => (503, serde_json::json!({ "error": "upstream_rate_limited" })),
+            Self::RateLimited => {
+                // Logged, unlike the other arms, because this is the one failure that leaves no
+                // other trace: it is a normal HTTP answer with no exception and no upstream error
+                // body, so a `wrangler tail` of a rate-limited route used to be silent — which is
+                // exactly the state that made this hard to diagnose from outside.
+                console_error!("osu! rate-limited us and nothing was cached to stand in");
+                (503, serde_json::json!({ "error": "upstream_rate_limited" }))
+            }
             Self::Cache => (500, serde_json::json!({ "error": "cache_unavailable" })),
             Self::Shape => (
                 502,
@@ -239,7 +275,13 @@ impl Failure {
             Self::BadMode => (400, serde_json::json!({ "error": "unknown_mode" })),
         };
 
-        Response::from_json(&body).map(|response| response.with_status(status))
+        let response = Response::from_json(&body).map(|response| response.with_status(status))?;
+        // Never stored: a transient 503 is not an answer, and a client that cached it would keep
+        // showing a broken card after the upstream came back.
+        let _ = header(response.headers(), "Cache-Control", "no-store");
+        let _ = header(response.headers(), "X-Content-Type-Options", "nosniff");
+
+        Ok(response)
     }
 }
 

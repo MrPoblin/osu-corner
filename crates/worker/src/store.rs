@@ -82,10 +82,12 @@ impl Store for CacheApiStore {
 
     async fn write(&self, key: &str, entry: &Entry) -> Result<(), StoreError> {
         let headers = Headers::new();
-        // This is also the Cache API's own TTL: it reads the stored response's `Cache-Control`, so
-        // the policy and the storage agree by construction.
+        // This is the Cache API's own TTL: it reads the stored response's `max-age`, and it ignores
+        // `stale-while-revalidate`, which is why the stored header is the policy's *retention* and
+        // not its freshness window. Freshness is decided by `corner_core::resolve` against the
+        // `x-fetched-at` below.
         headers
-            .set("Cache-Control", &self.policy.cache_control())
+            .set("Cache-Control", &self.policy.storage_cache_control())
             .map_err(fail)?;
         headers
             .set("Content-Type", "application/json")

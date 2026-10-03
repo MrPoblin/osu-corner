@@ -114,7 +114,10 @@ async fn exchange(env: &Env) -> Result<String, Failure> {
         // The credentials themselves are wrong. That never fixes itself, so it is not retried and
         // is reported as a configuration failure rather than an outage.
         401 => Err(Failure::Credentials),
-        429 => Err(Failure::RateLimited),
+        429 => {
+            console_error!("osu! rate-limited the token exchange");
+            Err(Failure::RateLimited)
+        }
         _ => Err(Failure::Upstream),
     }
 }

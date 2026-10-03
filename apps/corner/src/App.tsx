@@ -5,11 +5,11 @@ import { ProfileCard } from "./ProfileCard.tsx";
 import { ReplayList } from "./ReplayList.tsx";
 import { Sky } from "./Sky.tsx";
 import { MESH_STILL, Triangles, trianglesOn, useEntryFinished } from "./Triangles.tsx";
-import { accentFor, coverUrl, formatNumber } from "./osu.ts";
+import { accentFor, apiMode, coverUrl, formatDate, formatNumber } from "./osu.ts";
 import type { Play } from "./osu.ts";
 import { CONFIG } from "./config.ts";
 import type { ScoreMode } from "./config.ts";
-import { useIndexes } from "./useJson.ts";
+import { staleSince, useIndexes, useProfile } from "./useJson.ts";
 
 /**
  * The corner.
@@ -58,6 +58,14 @@ export default function App() {
   const [scoreMode, setScoreMode] = useState<ScoreMode>(CONFIG.defaultScore);
   const indexes = useIndexes(MODE_IDS);
 
+  /**
+   * The profile, fetched here rather than inside the card because **two places need it**: the card
+   * renders it, and the header states its age when the refresh has stopped. One request, one
+   * answer, no second copy to disagree.
+   */
+  const profile = useProfile(apiMode(mode));
+  const stale = profile.state === "ready" ? staleSince(profile.data, CONFIG.staleProfileAfterDays) : null;
+
   // Stable, because `ReplayList` reports previews from an effect.
   const onPreview = useCallback((play: Play | null) => setPreview(play), []);
 
@@ -98,19 +106,41 @@ export default function App() {
              * last item of the mode row it read as one more mode, and on a narrow header it wrapped onto a line
              * by itself.
              */}
-            <div className="score-mode" role="group" aria-label="Score">
-              {SCORE_MODES.map((entry) => (
-                <button
-                  key={entry.id}
-                  type="button"
-                  className="score-mode__option"
-                  aria-pressed={entry.id === scoreMode}
-                  title={entry.title}
-                  onClick={() => setScoreMode(entry.id)}
+            <div className="score-mode-anchor">
+              <div className="score-mode" role="group" aria-label="Score">
+                {SCORE_MODES.map((entry) => (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    className="score-mode__option"
+                    aria-pressed={entry.id === scoreMode}
+                    title={entry.title}
+                    onClick={() => setScoreMode(entry.id)}
+                  >
+                    {entry.label}
+                  </button>
+                ))}
+              </div>
+
+              {/*
+               * The staleness notice, hanging off the end of the score pair — and **out of flow**,
+               * which is the whole point: it joins no flex line, so the header is identical with and
+               * without it at every width. In flow it changed where the header wraps, and inside the
+               * card it re-centred the card.
+               *
+               * The date is its own element so it can be pushed onto a second line where the sentence
+               * does not fit beside the score pair. The words are never dropped: a bare date next to a
+               * score toggle says nothing.
+               */}
+              {stale && (
+                <p
+                  className="profile-stale"
+                  title={`Profile data last updated ${formatDate(stale)}`}
                 >
-                  {entry.label}
-                </button>
-              ))}
+                  <span className="profile-stale__what">profile updated</span>{' '}
+                  <span className="profile-stale__date">{formatDate(stale)}</span>
+                </p>
+              )}
             </div>
           </div>
 
@@ -140,7 +170,7 @@ export default function App() {
 
         <main className="mx-auto w-full max-w-[1240px] px-3 sm:px-6">
           <section aria-label="Profile" className="mt-3">
-            <ProfileCard mode={mode} />
+            <ProfileCard profile={profile} />
           </section>
 
           <section aria-label="Library" className="pt-3 pb-24">

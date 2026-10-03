@@ -19,12 +19,25 @@
 //! became its own repository. The storage and HTTP traits were deliberately absent until now —
 //! a trait with no implementor is dead weight — and arrived with the first route that needed them.
 
-/// How long a cached value is fresh, and how long past that it may still be served while a refresh
-/// happens in the background.
+/// How long a cached value is fresh, how long past that it may still be served while a refresh
+/// happens in the background, and how long a store keeps it at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CachePolicy {
     pub ttl_secs: i64,
     pub stale_while_revalidate_secs: i64,
+    /// How long a store keeps the entry — deliberately separate from how long it is **fresh**.
+    ///
+    /// The Cache API takes its expiry from the stored response's `max-age` and **ignores
+    /// `stale-while-revalidate`** (Cloudflare documents that directive as unsupported for
+    /// `cache.put` / `cache.match`). So a store told `max-age=<ttl>` throws the entry away at
+    /// exactly the moment the stale-while-revalidate window opens: the fallback would never exist,
+    /// and a throttled or unreachable upstream would reach the visitor as an error even though a
+    /// good copy had just been discarded.
+    ///
+    /// This is the number that decides how long the last good answer survives an outage, so it is
+    /// set to outlast any plausible outage rather than to match freshness. It never makes data
+    /// *fresher* — [`resolve`] alone decides that, from the entry's own `fetched_at`.
+    pub retain_secs: i64,
 }
 
 impl CachePolicy {
@@ -33,6 +46,16 @@ impl CachePolicy {
         Self {
             ttl_secs,
             stale_while_revalidate_secs,
+            retain_secs: ttl_secs + stale_while_revalidate_secs,
+        }
+    }
+
+    /// Keep the stored copy for `retain_secs`, without touching how fresh it is.
+    #[must_use]
+    pub const fn retained_for(self, retain_secs: i64) -> Self {
+        Self {
+            retain_secs,
+            ..self
         }
     }
 
@@ -42,17 +65,14 @@ impl CachePolicy {
         self.ttl_secs + self.stale_while_revalidate_secs
     }
 
-    /// The `Cache-Control` value a response served under this policy should carry.
+    /// The `Cache-Control` a **stored** copy carries, which is the store's own TTL.
     ///
-    /// This is also how long the Cache API holds the entry: its TTL comes from the stored
-    /// response's own `Cache-Control`, so the policy and the storage agree by construction rather
-    /// than by two numbers that have to be kept in step.
+    /// Not a serving window for any client: freshness is [`resolve`]'s job, and the header a client
+    /// receives is set by the adapter, not by this. `stale-while-revalidate` is deliberately absent
+    /// because the Cache API ignores it.
     #[must_use]
-    pub fn cache_control(&self) -> String {
-        format!(
-            "public, max-age={}, stale-while-revalidate={}",
-            self.ttl_secs, self.stale_while_revalidate_secs
-        )
+    pub fn storage_cache_control(&self) -> String {
+        format!("public, max-age={}", self.retain_secs)
     }
 }
 
@@ -177,6 +197,13 @@ pub trait Store {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
     pub body: String,
+    /// When the body was fetched from upstream — the entry's own `fetched_at` when it came from the
+    /// cache, and `now` when it came from a fresh call.
+    ///
+    /// Carried out of here because it is the only honest answer to "how old is this?": the cache
+    /// keeps a copy for a week, so a body can be served long after it was fetched, and the caller
+    /// publishes the age rather than letting a stale rank look current.
+    pub fetched_at: i64,
     /// The body came from a stale entry: serve it now and refresh in the background. The Worker
     /// hands [`refresh`] to `ctx.wait_until`; a test just awaits it.
     ///
@@ -204,17 +231,22 @@ pub async fn get_or_fetch<T: Transport, S: Store>(
 
     match (resolve(cached.as_ref(), policy, now), cached) {
         (Resolution::Fresh, Some(entry)) => Ok(Outcome {
+            fetched_at: entry.fetched_at,
             body: entry.body,
             refresh: false,
         }),
         (Resolution::Stale, Some(entry)) => Ok(Outcome {
+            fetched_at: entry.fetched_at,
             body: entry.body,
             refresh: true,
         }),
         // A miss, or a resolver that disagreed with the entry it was handed. Either way: fetch.
         (_, fallback) => match transport.get(url, token).await {
             Ok(upstream) if upstream.is_success() => {
-                store
+                // A store that cannot be written is not a reason to withhold a body already in
+                // hand: the entry is simply not cached and the next request fetches again. Turning
+                // a cache fault into a failed request would be the cache making things worse.
+                let _ = store
                     .write(
                         key,
                         &Entry {
@@ -223,8 +255,9 @@ pub async fn get_or_fetch<T: Transport, S: Store>(
                             etag: upstream.etag,
                         },
                     )
-                    .await?;
+                    .await;
                 Ok(Outcome {
+                    fetched_at: now,
                     body: upstream.body,
                     refresh: false,
                 })
@@ -232,6 +265,7 @@ pub async fn get_or_fetch<T: Transport, S: Store>(
             // Upstream answered, and the answer is unusable.
             Ok(upstream) => match fallback {
                 Some(entry) => Ok(Outcome {
+                    fetched_at: entry.fetched_at,
                     body: entry.body,
                     refresh: false,
                 }),
@@ -240,6 +274,7 @@ pub async fn get_or_fetch<T: Transport, S: Store>(
             // Never got an answer at all.
             Err(error) => match fallback {
                 Some(entry) => Ok(Outcome {
+                    fetched_at: entry.fetched_at,
                     body: entry.body,
                     refresh: false,
                 }),
@@ -345,6 +380,20 @@ mod tests {
         entries: Rc<RefCell<HashMap<String, Entry>>>,
     }
 
+    /// A store that can never be written. Proves a cache fault does not become a visible failure.
+    #[derive(Clone, Default)]
+    struct UnwritableStore;
+
+    impl Store for UnwritableStore {
+        async fn read(&self, _key: &str) -> Result<Option<Entry>, StoreError> {
+            Ok(None)
+        }
+
+        async fn write(&self, _key: &str, _entry: &Entry) -> Result<(), StoreError> {
+            Err(StoreError("this store refuses writes".to_string()))
+        }
+    }
+
     impl Store for MemoryStore {
         async fn read(&self, key: &str) -> Result<Option<Entry>, StoreError> {
             Ok(self.entries.borrow().get(key).cloned())
@@ -394,6 +443,37 @@ mod tests {
         assert_eq!(first.unwrap().body, "{\"username\":\"poblin\"}");
         assert_eq!(second.unwrap().body, "{\"username\":\"poblin\"}");
         assert_eq!(transport.calls(), 1, "the second read must come from cache");
+    }
+
+    /// The age a caller publishes must be the age of the **body**, not of the request. A cached
+    /// body keeps its own instant; only a real fetch re-dates it. This is what lets the card say
+    /// "last updated" honestly when the cache is standing in for an upstream that will not answer.
+    #[test]
+    fn the_outcome_carries_when_the_body_was_fetched() {
+        let transport = CountingTransport::new("{}");
+        let store = MemoryStore::default();
+
+        let first = pollster::block_on(get_or_fetch(
+            &transport, &store, KEY, URL, TOKEN, POLICY, START,
+        ))
+        .unwrap();
+        assert_eq!(first.fetched_at, START, "a real fetch is stamped now");
+
+        let cached = pollster::block_on(get_or_fetch(
+            &transport,
+            &store,
+            KEY,
+            URL,
+            TOKEN,
+            POLICY,
+            START + 100,
+        ))
+        .unwrap();
+        assert_eq!(
+            cached.fetched_at, START,
+            "a cache hit keeps the instant the body was fetched, not the instant it was served"
+        );
+        assert_eq!(transport.calls(), 1);
     }
 
     #[test]
@@ -570,10 +650,45 @@ mod tests {
     }
 
     #[test]
-    fn cache_control_matches_the_policy() {
+    fn the_store_keeps_the_entry_at_least_until_hard_expiry() {
+        // The bug this guards: `max-age=<ttl>` made the Cache API discard the entry when the
+        // stale-while-revalidate window opened, so the fallback never existed.
+        assert!(SHORT.retain_secs >= SHORT.hard_expiry_secs());
+        assert_eq!(SHORT.storage_cache_control(), "public, max-age=720");
+    }
+
+    #[test]
+    fn retention_extends_storage_without_touching_freshness() {
+        let week = SHORT.retained_for(604_800);
+
+        assert_eq!(week.retain_secs, 604_800);
+        assert_eq!(week.ttl_secs, SHORT.ttl_secs, "retention is not freshness");
         assert_eq!(
-            SHORT.cache_control(),
-            "public, max-age=120, stale-while-revalidate=600"
+            week.stale_while_revalidate_secs,
+            SHORT.stale_while_revalidate_secs
         );
+        assert_eq!(week.hard_expiry_secs(), SHORT.hard_expiry_secs());
+        assert_eq!(week.storage_cache_control(), "public, max-age=604800");
+    }
+
+    /// A cache that cannot be written must not fail a request whose body is already in hand.
+    #[test]
+    fn a_failed_write_still_serves_the_fetched_body() {
+        let transport = CountingTransport::new("{\"fresh\":true}");
+
+        let answered = pollster::block_on(get_or_fetch(
+            &transport,
+            &UnwritableStore,
+            KEY,
+            URL,
+            TOKEN,
+            POLICY,
+            START,
+        ))
+        .unwrap();
+
+        assert_eq!(answered.body, "{\"fresh\":true}");
+        assert!(!answered.refresh);
+        assert_eq!(transport.calls(), 1);
     }
 }

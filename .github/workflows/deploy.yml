@@ -113,6 +113,15 @@ jobs:
           STORAGE_PUBLIC_BASE: ${{ vars.STORAGE_PUBLIC_BASE }}
         run: grep -qF "$STORAGE_PUBLIC_BASE" apps/corner/dist/_headers
 
+      # The check above proves the *policy* carries the host. The index fetch is the second consumer
+      # of the same value, and a build that injected nothing would look for `index-*.json` in the
+      # Worker's own assets — which this checkout does not have, so the library would 404 silently.
+      - name: The bundle fetches the index from the storage host
+        if: vars.STORAGE_PUBLIC_BASE != ''
+        env:
+          STORAGE_PUBLIC_BASE: ${{ vars.STORAGE_PUBLIC_BASE }}
+        run: grep -qF "$STORAGE_PUBLIC_BASE" apps/corner/dist/osu/assets/*.js
+
       # `GIT_SHA` reaches the bundle through `option_env!` in the health handler, so a deploy can be
       # confirmed from outside against the SHA that triggered it.
       - name: Build worker to wasm

@@ -18,8 +18,11 @@ name = "osu! corner"
 # supported state, not a failure: the objects stay in `library/` and the run reports them as not
 # uploaded.
 #
-# `public_base` is the URL the browser fetches the index and the replays from. It is written into the
-# index header and substituted into the CSP at build time, so this is the only place the value lives.
+# `public_base` is the URL the browser fetches the index and the replays from. It is substituted into
+# the CSP at build time and injected into the frontend as the index's base URL, so this is the only
+# place the value lives. It is deliberately not a static asset of this repository: the index is the
+# owner's data, so it travels through the bucket, and a play reaches the site on the next ingest
+# rather than the next deploy.
 public_base = ""
 bucket = ""
 # The **S3 API** endpoint uploads are signed against. Deliberately not `public_base`: one is an API,

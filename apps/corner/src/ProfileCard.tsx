@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 
-import { apiMode, formatDate, formatNumber, formatPlayTime, GRADES } from "./osu.ts";
+import { formatDate, formatNumber, formatPlayTime, GRADES } from "./osu.ts";
 import { OsuLogo } from "./OsuLogo.tsx";
 import { Tip } from "./Tip.tsx";
-import { useJson } from "./useJson.ts";
+import type { Async, Profile } from "./useJson.ts";
 
 /**
- * The profile card (design §2). One request, and every field shown comes from it.
+ * The profile card (design §2). One request — the Worker's live route, with the snapshot
+ * `osu-ingest` publishes as the fallback (see `useProfile`) — and every field shown comes from it.
  *
  * The picture and the name are the prominent half, side by side; everything else is smaller and
  * pushed to the side of the panel, so the identity leads instead of being huddled into the numbers.
@@ -14,25 +15,6 @@ import { useJson } from "./useJson.ts";
  * A ruleset with no plays is not an error: osu! answers `pp: 0` with `global_rank` and `country_rank`
  * null, so an absent rank is a real **unranked** state rather than a zero.
  */
-
-interface Profile {
-  /** The account id, so the card can link to the player's own osu! profile. */
-  id: number;
-  username: string;
-  avatar_url: string;
-  country_code: string;
-  join_date: string;
-  rank_history: { data: number[]; mode: string };
-  statistics: {
-    pp: number;
-    global_rank: number | null;
-    country_rank: number | null;
-    hit_accuracy: number;
-    play_count: number;
-    play_time: number;
-    grade_counts: { ssh: number; ss: number; sh: number; s: number; a: number };
-  };
-}
 
 const BADGES: {
   key: keyof Profile["statistics"]["grade_counts"];
@@ -45,16 +27,15 @@ const BADGES: {
   { key: "a", grade: GRADES[4] },
 ];
 
-export function ProfileCard({ mode }: { mode: string }) {
-  const profile = useJson<Profile>(`/api/osu/profile?mode=${apiMode(mode)}`);
-
+export function ProfileCard({ profile }: { profile: Async<Profile> }) {
   if (profile.state === "loading") return <Shell />;
 
   if (profile.state === "error") {
     return (
       <p className="text-sm text-[var(--color-dim)]">
         The profile could not be loaded ({profile.error}). It comes from{" "}
-        <code>/api/osu/profile</code>, so the Worker needs to be running.
+        <code>/api/osu/profile</code>, with a published <code>profile-*.json</code> as the fallback —
+        so neither the Worker nor an ingest run has produced one.
       </p>
     );
   }

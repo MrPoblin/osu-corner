@@ -15,6 +15,7 @@ mod mirror;
 mod pp;
 #[cfg(test)]
 mod probe;
+mod profile;
 mod score;
 mod store;
 
@@ -61,16 +62,17 @@ fn enabled_by_default() -> bool {
 }
 
 #[derive(Deserialize)]
-struct User {
+pub(crate) struct User {
     id: i64,
     names: Vec<String>,
 }
 
 #[derive(Deserialize)]
 struct Storage {
-    /// The **public base URL** the browser reads the index and the replays from — written into the
-    /// index header and allowed by the CSP. A URL, where `endpoint` below is an API. Empty is a
-    /// supported state: the objects stay in `library/` and are reported as not uploaded.
+    /// The **public base URL** the browser reads the index and the replays from — allowed by the CSP
+    /// and injected into the frontend as the index's base URL. A URL, where `endpoint` below is an
+    /// API. Empty is a supported state: the objects stay in `library/` and are reported as not
+    /// uploaded.
     public_base: String,
     bucket: String,
     /// The **S3 API** endpoint uploads are signed against —
@@ -100,6 +102,9 @@ fn main() -> ExitCode {
     // leaves behind — an unbounded first run would sit on the osu! API for an hour before printing
     // anything. The rest are looked for on the next run, and `0` removes the bound.
     let mut fetch_limit: usize = 100;
+    // Publish the profile snapshot and stop. A scheduled run uses this; a full ingest does the same
+    // work as part of its normal run.
+    let mut profile_only = false;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut index = 0;
@@ -108,6 +113,7 @@ fn main() -> ExitCode {
         index += 1;
         match arg.as_str() {
             "--dry-run" => dry_run = true,
+            "--profile-only" => profile_only = true,
             "--fetch-limit" => {
                 let Some(value) = args.get(index) else {
                     eprintln!("--fetch-limit needs a number. Try --help.");
@@ -196,6 +202,25 @@ fn main() -> ExitCode {
         }
     };
 
+    // A scheduled refresh publishes the profile and stops. It reads no sources, so it runs where
+    // there is no osu! client at all — which is what lets it sit on a runner whose address osu!
+    // answers while the Worker's own upstream call is rate-limited.
+    if profile_only {
+        return match library::refresh_profiles(
+            &config.user,
+            &work,
+            &config.mirrors.urls,
+            bucket.as_ref(),
+            dry_run,
+        ) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("\n{error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     // Whether a beatmap no install holds can be fetched needs the osu! application's credentials.
     // Absence is a supported state, not a failure — it is what a fresh clone looks like.
     println!(
@@ -231,17 +256,9 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Every account name across every [[user]], because that is what decides whose replays are
-    // staged: the `.osr` header names its player and anything else is refused.
-    let names: Vec<String> = config
-        .user
-        .iter()
-        .flat_map(|user| user.names.iter().cloned())
-        .collect();
-
     match library::build(
         &enabled,
-        &names,
+        &config.user,
         &work,
         &config.mirrors.urls,
         fetch_limit,
@@ -263,6 +280,9 @@ fn print_help() {
          ARGS:\n    CONFIG      path to the committed defaults (default: osu-corner.toml).\n                \
          A sibling <name>.local.toml is merged over it if present.\n\n\
          OPTIONS:\n    --dry-run   report what would be staged without writing anything\n    \
+         --profile-only\n                \
+         refresh and publish the profile snapshots, then stop. Reads no game\n                \
+         folders, so it needs no installs — this is what a scheduled run uses.\n    \
          --fetch-limit N\n                \
          how many beatmaps no install holds to look for this run\n                \
          (default 100; 0 means no limit). Each takes about a second,\n                \

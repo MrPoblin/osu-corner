@@ -47,6 +47,10 @@ use std::time::{Duration, Instant};
 const TOKEN_URL: &str = "https://osu.ppy.sh/oauth/token";
 const LOOKUP_URL: &str = "https://osu.ppy.sh/api/v2/beatmaps/lookup";
 
+/// The users endpoint. A real constant rather than the test-only `API` below, because the profile
+/// snapshot is fetched by every run that has credentials — that is the whole point of it (§9).
+const USERS_URL: &str = "https://osu.ppy.sh/api/v2/users";
+
 /// Only the validation probe uses these. They stay test-only on purpose: §2's promise is that **no
 /// osu! API request is made to build the library**, so nothing in a real run may ask osu! for a
 /// score.
@@ -237,6 +241,27 @@ impl Fetcher {
                         other => other.get("scores")?.as_array().cloned(),
                     };
                 }
+                Err(ureq::Error::StatusCode(429)) => {
+                    std::thread::sleep(PACE * 2u32.pow(attempt));
+                }
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// One ruleset's profile for an account, verbatim.
+    ///
+    /// Verbatim because projecting is the caller's job: `osu_core::profile::project` is the single
+    /// allowlist, and applying it here would mean this module knew what may be published.
+    pub fn profile(&mut self, user_id: i64, mode: &str) -> Option<String> {
+        for attempt in 1..=LOOKUP_ATTEMPTS {
+            self.pace();
+            let token = self.token()?;
+            let url = format!("{USERS_URL}/{user_id}/{mode}");
+
+            match self.get_with_token(&url, &token) {
+                Ok(body) => return Some(body),
                 Err(ureq::Error::StatusCode(429)) => {
                     std::thread::sleep(PACE * 2u32.pow(attempt));
                 }

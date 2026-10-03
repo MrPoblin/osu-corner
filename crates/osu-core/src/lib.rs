@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
-//! The osu! domain: `.osr` and `.osu` parsing, the library index format, and grades.
+//! The osu! domain: `.osr` and `.osu` parsing, the library index format, grades, and what a
+//! profile response may contain.
 //!
 //! (`pp` is not here — it needs `rosu-pp`, which stays in `osu-ingest` so this crate keeps
 //! compiling for wasm32 as the Worker's domain crate.)
@@ -12,6 +13,7 @@
 pub mod grade;
 pub mod osr;
 pub mod osu;
+pub mod profile;
 
 /// Bytes as lowercase hex — how every osu! identity is written down: a beatmap MD5, a `.osr`
 /// filename's first half, a store hash. Here rather than beside any one caller because three of

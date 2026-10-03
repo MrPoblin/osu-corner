@@ -34,6 +34,13 @@ Thumbs.db
 .idea/
 .vscode/*
 
-# The index files the app fetches at /osu/index-*.json. They are ingest output, written into
-# `library/` and copied here so the dev server, the build and production all use one URL.
+# The index files. Ingest output, written into `library/`.
+#
+# A copy here is what the dev server serves, and what a build falls back to when
+# `storage.public_base` is empty — the clone that serves its own index. With a `public_base` set the
+# app fetches them from the storage host instead, so CI, which has no copy, still deploys correctly.
 /apps/corner/public/index-*.json
+
+# The profile snapshots, for exactly the same reasons — ingest output, never committed. The dev
+# server reads a copy here so `pnpm dev` shows a real card without a Worker running.
+/apps/corner/public/profile-*.json

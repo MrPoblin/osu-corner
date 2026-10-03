@@ -331,6 +331,65 @@
     background-color: hsl(240 7% 7% / 0.6);
   }
 
+  /*
+   * The score pair's box, with the staleness notice hanging off its end.
+   *
+   * `position: relative` here plus `position: absolute` on the notice is the entire trick, and it is
+   * the only reason a warning is allowed in the header: **the notice joins no flex line**, so the
+   * header is identical with and without it at every width. In flow it changed where the header
+   * wrapped; inside the card it re-centred the card (measured: the panel grew 140.3px -> 157.6px and
+   * the avatar moved 8.7px).
+   */
+  .score-mode-anchor {
+    position: relative;
+  }
+
+  /*
+   * Small and red — `--color-grade-d`, which is osu!'s own red rather than a new one — because this
+   * is the one line on the page that means "something is wrong", and everything around it is grey.
+   *
+   * `pointer-events: none` because it is a label, not a control: if a narrow viewport ever brings it
+   * near the mode pills it must not swallow a click meant for them.
+   */
+  .profile-stale {
+    position: absolute;
+    left: 100%;
+    top: 50%;
+    transform: translateY(-50%);
+    margin: 0 0 0 10px;
+    white-space: nowrap;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    color: var(--color-grade-d);
+    pointer-events: none;
+  }
+
+  /*
+   * Below the width where the sentence fits beside the score pair, the date moves to a second line
+   * instead of the words being dropped — a bare "4 Aug 2026" next to a score toggle is a puzzle, not
+   * a warning. "profile updated" is 85px and the date 72px, so the widest line fits the gap the
+   * header leaves: 118px at 390, 109 at 760, 169 at 820, 249 at 900. The full sentence is 162px and
+   * needs about 870px.
+   */
+  @media (max-width: 869px) {
+    .profile-stale__date {
+      display: block;
+    }
+  }
+
+  /*
+   * The one band where neither form fits: 600-700px, where the pills share row 1 and the gap is
+   * under 50px. Hidden rather than printed over a control, because a warning that covers the mode
+   * switcher is worse than one absent for 100px of viewport. Recorded as a known gap, not papered
+   * over — below 600px the pills drop to their own row and the whole of row 1 is free again.
+   */
+  @media (min-width: 600px) and (max-width: 700px) {
+    .profile-stale {
+      display: none;
+    }
+  }
+
   .score-mode__option {
     height: 24px;
     padding: 0 9px;

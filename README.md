@@ -1,137 +1,115 @@
 # osu! corner
 
-A profile page and a replay library for [osu!](https://osu.ppy.sh) — clone it, point it at
-your own replays, deploy it to your own Cloudflare account.
+A profile page and replay library for [osu!](https://osu.ppy.sh). Clone it, point it at your own
+replays, deploy it to your own Cloudflare account.
 
-The library is one small static index that the browser downloads whole, plus the `.osr`
-replay files themselves. Beatmap files and audio are **not** stored here: they come from
-public beatmap mirrors, fetched and cached by the visitor's own browser.
-
-> **Status: scaffolding.** The workspace, configuration and deploy path exist and build.
-> There is no ingest, no API route and no interface yet — see [What exists](#what-exists).
+The library is one small index the browser downloads whole, plus the `.osr` files. Beatmaps and
+audio are not stored here — they come from public mirrors, cached by the visitor's own browser.
 
 ## Requirements
 
-| | |
-|---|---|
-| Node 24.21.0 | pinned in `.nvmrc` |
-| pnpm 12.4.2 | `packageManager` in `package.json` |
-| Rust 1.98.1 + `wasm32-unknown-unknown` | `rust-toolchain.toml`; `rustup` installs both on first use |
-| A Cloudflare Workers account | the free plan is enough |
-| An R2 bucket | for the replay files. 10,000 replays is roughly 400 MB, inside the free 10 GB |
-| osu!lazer, installed | with the replays you want to publish |
-| An osu! OAuth application | client credentials — see below |
+- Node 24.21.0, pnpm 12.4.2
+- Rust 1.98.1 with `wasm32-unknown-unknown` (`rustup` installs both from `rust-toolchain.toml`)
+- A Cloudflare Workers account — the free plan is enough
+- An S3-compatible bucket: B2, R2, MinIO. 10k replays is roughly 400 MB
+- osu!lazer installed, with the replays you want to publish
+- An osu! OAuth application
 
-## What exists
+## Layout
 
-```
-apps/corner/       the corner itself: profile card, replay library, later the viewer
-crates/worker/     osu-worker   the /api/* Worker
-crates/core/       corner-core  cache logic, runtime-agnostic so it tests without wasm
-crates/osu-core/   osu-core     .osr and .osu parsers, the index format, pp
-crates/ingest/     osu-ingest   the local binary: replays → index → R2
-```
+    apps/corner/       profile card, replay library, viewer
+    crates/worker/     osu-worker   the /api/* Worker
+    crates/core/       corner-core  cache logic; no `worker` dep, so it tests under plain cargo
+    crates/osu-core/   osu-core     .osr and .osu parsing, the index format, pp
+    crates/ingest/     osu-ingest   local binary: replays → index + profile snapshot → bucket
 
-Only `apps/corner` and `crates/worker` do anything today — the Worker serves `/api/health`
-and nothing else. The other three are the decided crate layout with their boundaries
-recorded, and are filled in later.
+## Setup
 
-## Setting it up
+1. `pnpm install && pnpm exec wrangler login`
 
-1. **Install and authenticate.**
+2. Put your values in `osu-corner.local.toml` beside the committed `osu-corner.toml` — gitignored,
+   merged over the defaults, and the shape is at the bottom of `osu-corner.toml`. One `[[source]]`
+   per game install, one `[[user]]` with your numeric osu! id and every name the account has
+   played under.
 
-   ```bash
-   pnpm install
-   pnpm exec wrangler login
-   ```
+3. Create a bucket, and put its public URL, bucket name, S3 endpoint and region in the local file.
 
-2. **Point it at your installs.** `osu-corner.toml` is committed and holds only generic
-   defaults. Your own values belong in `osu-corner.local.toml` beside it, which is gitignored and
-   merged over the defaults — the shape to copy is at the bottom of `osu-corner.toml`. Add a
-   `[[source]]` for each game install you want read.
+4. Register an osu! OAuth application at
+   [osu.ppy.sh/home/account/edit](https://osu.ppy.sh/home/account/edit) with the client-credentials
+   grant, so there is no callback URL. Copy `.dev.vars.example` to `.dev.vars` and fill in the id
+   and secret — ingest uses the same pair to look up beatmaps your installs do not hold.
 
-3. **Set your account** in that same local file — `[[user]] id` is your numeric osu! id, and
-   `names` must list every username the account has played under. A rename means a new
-   alias; ingest reports replays that matched no configured account, so a missing one is
-   visible rather than silent.
+5. `cargo run -p osu-ingest` reads the game folders directly and writes the four
+   `index-<mode>.json` files plus one `profile-<mode>.json` per ruleset, uploading them all.
 
-4. **Create an R2 bucket** in the Cloudflare dashboard, then put its public hostname and
-   the bucket name into the local file.
+6. Push to `main`. `.github/workflows/deploy.yml` builds the app and the Worker and runs
+   `wrangler deploy`. It needs:
 
-5. **Register an osu! OAuth application** at
-   [osu.ppy.sh/home/account/edit](https://osu.ppy.sh/home/account/edit). Use the
-   client-credentials grant, so the application callback URL stays empty, then copy
-   `.dev.vars.example` to `.dev.vars` and fill in the id and secret. Production uses
-   `wrangler secret put` instead, so the values never enter the repository. Ingest uses the
-   same two values: a beatmap that **neither** of your installs holds can still be fetched,
-   because its MD5 is enough for the osu! API to name it and a mirror then serves the file.
-   **Without them the run still succeeds** and simply reports those maps as not looked for.
+   | Name | Kind | Value |
+   |---|---|---|
+   | `CLOUDFLARE_API_TOKEN` | secret | scoped to the account and zone; Workers Scripts Write + Workers Routes Write |
+   | `CLOUDFLARE_ACCOUNT_ID` | secret | the account the Worker lives in |
+   | `STORAGE_PUBLIC_BASE` | variable | `storage.public_base` |
+   | `PUBLIC_ZONE` | variable | the zone the routes live on |
+   | `PUBLIC_ROUTES` | variable | one route per line, e.g. `example.com/osu/*` and `example.com/api/osu/*` |
 
-6. **Collect, then build the index** — `cargo run -p osu-ingest`. It reads the game folders
-   directly, so there is no export step and no third-party tool. *Index writing not
-   implemented yet.*
+   Both routes are needed: the page is at `/osu/`, the profile at `/api/osu/profile` on the site
+   root. With `PUBLIC_ROUTES` unset it publishes to `osu-corner.<account>.workers.dev` instead.
 
-7. **Deploy.**
+   `OSU_CLIENT_ID`, `OSU_CLIENT_SECRET` and `OSU_PROFILE_USER` are set once with
+   `wrangler secret put` and survive every deploy, so CI never handles them.
+
+7. `.github/workflows/profile.yml` refreshes the published profile snapshot hourly. It needs your
+   two gitignored files as secrets:
 
    ```bash
-   pnpm build
-   pnpm exec wrangler deploy
+   gh secret set OSU_CORNER_LOCAL_TOML < osu-corner.local.toml
+   gh secret set OSU_CORNER_DEV_VARS   < .dev.vars
    ```
 
-   With no route configured this publishes to `osu-corner.<account>.workers.dev`, and the
-   page is at `/osu/` there rather than at the root — see the next section.
+   `--profile-only` reads no game folders, so the runner needs no osu! install and any `[[source]]`
+   entries in the copied config are ignored. GitHub disables scheduled workflows after 60 days
+   without a push.
 
-## Mounting it at a path
+## The profile card
 
-The corner is built to be mounted at a **path**, so it can live at `example.com/osu/`
-alongside another site instead of taking a whole domain.
+Fetches `/api/osu/profile` (live, from the Worker) and `profile-<mode>.json` (the snapshot ingest
+publishes), and uses whichever carries the newer `fetched_at`.
 
-That path appears in two places and they must agree:
+Both are needed. The Worker's upstream call leaves from Cloudflare's shared egress addresses and
+osu! rate-limits per IP, so it has hour-long windows where it can only answer 503 — and its cache
+holds a body for a week, so it will serve a three-day-old one rather than admit it. The snapshot is
+the floor under both.
 
-| Where | What |
-|---|---|
-| `base` in `apps/corner/vite.config.ts` | what URLs the build emits |
-| the route in `wrangler.toml` | what the Worker answers for |
+Past `staleProfileAfterDays` (30, in `apps/corner/src/config.ts`) the header shows
+`profile updated <date>`.
 
-**`vite.config.ts` also derives the build's output nesting from it, and that part is not a
-preference.** Workers serve static assets only from a directory structure that mirrors the
-requested path, so a corner answering at `/osu/` must physically build to `dist/osu/`. A
-corner serving from a domain root uses `/` and builds to `dist/`.
+## Mounting at a path
 
-**Nothing in the app may hardcode a root-absolute path.** Use `import.meta.env.BASE_URL`.
-Vite rewrites the bundle and `index.html` for you; anything hand-written — a fetch, an image
-`src`, a link — has to read the same value, or it breaks in exactly the places nobody tests.
+`base` in `apps/corner/vite.config.ts` must match the route in `wrangler.toml`, and it also decides
+the build's output nesting: Workers serve assets only from a directory mirroring the request path,
+so `/osu/` builds to `dist/osu/`. Never hardcode a root-absolute path — use
+`import.meta.env.BASE_URL`.
 
 ## Configuration
 
 | File | Holds | Committed |
 |---|---|---|
-| `osu-corner.toml` | generic defaults — the site name, the mirror list, and the shape of everything else | yes |
-| `osu-corner.local.toml` | **your** values — install paths, your account, the R2 bucket. Merged over the defaults; arrays replace rather than append | **no** — gitignored |
+| `osu-corner.toml` | generic defaults | yes |
+| `osu-corner.local.toml` | your installs, account and bucket | **no** |
 | `apps/corner/vite.config.ts` | the mount path | yes |
-| `wrangler.toml` | the Worker name, assets, and later the route | yes |
-| `apps/corner/src/config.ts` | what the corner **opens on** — the ruleset, the score in the column (lazer's standardised totals or stable's original V1 ones), the sort, whether the triangle field starts on | yes |
-| `.dev.vars` | the osu! client id and secret — read by **both** the Worker and `osu-ingest`, the latter to fetch a beatmap no install holds | **no** — gitignored |
-
-## Layout notes
-
-`crates/core` (`corner-core`) is deliberately separate from `crates/osu-core`. It must not
-depend on `worker`, which is what lets its logic be tested with `cargo test` — no wasm, no
-network, no runtime. `osu-core` holds the osu! domain and is the piece worth lifting out on
-its own.
+| `wrangler.toml` | Worker name, assets, route | yes |
+| `apps/corner/src/config.ts` | what the corner opens on — ruleset, score mode, sort | yes |
+| `.dev.vars` | osu! client id and secret | **no** |
 
 ## Development
 
 ```bash
 pnpm check                      # typecheck every workspace package
-pnpm build                      # build the app
+pnpm build
 cargo test -p corner-core -p osu-core
 cargo fmt --all --check
 ```
 
-`pnpm preview` needs the Worker built first:
-
-```bash
-cd crates/worker && worker-build --release && cd ../..
-pnpm preview
-```
+`pnpm preview` needs the Worker built first: `cd crates/worker && worker-build --release`, then
+`pnpm preview` from the root.

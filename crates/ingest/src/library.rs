@@ -19,8 +19,8 @@
 use crate::collect::{self, Known};
 use crate::ledger::{Blob, Kind, Ledger};
 use crate::mirror::{Fetched, Fetcher};
-use crate::{Source, SourceKind};
-use crate::{index, pp, store};
+use crate::{Source, SourceKind, User};
+use crate::{index, pp, profile, store};
 use osu_core::{osr, osu};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -49,9 +49,75 @@ struct Staged {
     play: pp::Play,
 }
 
+/// Refresh and publish the profile snapshots, and nothing else.
+///
+/// **This is what a scheduled run does.** The game-folder walk, the pricing and the index are all
+/// skipped, so it finishes in seconds and needs no installs — which is the point: it runs on an
+/// address osu! answers, so the card keeps updating while the Worker's own upstream call is
+/// rate-limited (api plan §5).
+///
+/// The profile is *not* a thing you refresh by hand: osu! moves your rank whether you are looking or
+/// not, so this is wired to a schedule (`.github/workflows/profile.yml`).
+pub fn refresh_profiles(
+    accounts: &[User],
+    work: &Path,
+    mirrors: &[String],
+    bucket: Option<&store::Store>,
+    dry_run: bool,
+) -> Result<(), String> {
+    let Some(user_id) = accounts.first().map(|account| account.id) else {
+        return Err("no [[user]] id in the config, so there is no profile to refresh".to_owned());
+    };
+
+    if !dry_run {
+        fs::create_dir_all(work)
+            .map_err(|error| format!("cannot create {}: {error}", work.display()))?;
+    }
+
+    // A dry run must not create so much as a ledger file, the same promise `build` keeps.
+    let ledger_path = work.join("state.db");
+    let ledger_target = if dry_run && !ledger_path.exists() {
+        PathBuf::from(":memory:")
+    } else {
+        ledger_path
+    };
+    let mut ledger = Ledger::open(&ledger_target)?;
+
+    let mut fetcher = Fetcher::new(work, mirrors);
+    let written = profile::write(work, user_id, &mut fetcher, dry_run)?;
+
+    // **Not** a quiet success. A scheduled run that publishes nothing is the failure this workflow
+    // exists to avoid, and it is the one that would otherwise go green: an empty or missing
+    // `.dev.vars` means no token, so no fetch, so nothing written — and the Actions tab would show
+    // a passing job while the card quietly stopped moving.
+    if written.is_empty() {
+        return Err(
+            "nothing was fetched, so nothing was published. Check that .dev.vars holds \
+             OSU_CLIENT_ID and OSU_CLIENT_SECRET — in CI those come from the OSU_CORNER_DEV_VARS \
+             secret — and that osu! is answering from this address"
+                .to_owned(),
+        );
+    }
+
+    let Some(bucket) = bucket else {
+        println!("  profile: written to library/, but no bucket is configured to publish from");
+        return Ok(());
+    };
+
+    let report = store::upload_profiles(&mut ledger, work, bucket, dry_run)?;
+    println!(
+        "  {:<17}{:>6} uploaded, {:>6} already there",
+        if dry_run { "would upload" } else { "store" },
+        report.profile,
+        report.profile_skipped
+    );
+
+    Ok(())
+}
+
 pub fn build(
     sources: &[&Source],
-    user: &[String],
+    accounts: &[User],
     work: &Path,
     mirrors: &[String],
     limit: usize,
@@ -59,6 +125,18 @@ pub fn build(
     dry_run: bool,
 ) -> Result<(), String> {
     let roots = collect::roots(sources);
+
+    // Every account name across every [[user]], because that is what decides whose replays are
+    // staged: the `.osr` header names its player and anything else is refused.
+    let user: Vec<String> = accounts
+        .iter()
+        .flat_map(|account| account.names.iter().cloned())
+        .collect();
+
+    // Whose profile is published as the snapshot the card falls back to when the Worker cannot
+    // reach osu!. The first `[[user]]`, which is the same value `.dev.vars` carries as
+    // `OSU_PROFILE_USER`.
+    let profile_user = accounts.first().map(|account| account.id);
 
     if dry_run {
         println!("\n--dry-run: nothing will be written and the ledger will not be updated.");
@@ -101,8 +179,8 @@ pub fn build(
         let started = Instant::now();
 
         let found = match source.kind {
-            SourceKind::Lazer => collect::lazer(&key, &source.path, &known, user)?,
-            SourceKind::Stable => collect::stable(&key, &source.path, &known, user)?,
+            SourceKind::Lazer => collect::lazer(&key, &source.path, &known, &user)?,
+            SourceKind::Stable => collect::stable(&key, &source.path, &known, &user)?,
         };
 
         println!("\n{}  ({})", source.path.display(), kind_name(source.kind));
@@ -480,6 +558,22 @@ pub fn build(
         "score", report.scored, report.awaiting_score
     );
 
+    // -------------------------------------------------------------- the profile
+    //
+    // Published for the same reason the index is: the Worker's live route leaves from Cloudflare's
+    // shared egress addresses and osu! rate-limits per IP, so the card needs a copy it can always
+    // read. `None` is a config that names no account, which is a supported state rather than a
+    // failure — the same as a clone with no osu! credentials.
+    match profile_user {
+        Some(user_id) => {
+            profile::write(work, user_id, &mut fetcher, dry_run)?;
+        }
+        None => println!(
+            "  {:<17}no [[user]] id in the config, so no snapshot is published",
+            "profile"
+        ),
+    }
+
     // ------------------------------------------------------------------- store
     //
     // After the index, and in the same step as the replays it names, so an index can never point
@@ -496,13 +590,13 @@ pub fn build(
         println!(
             "  {:<17}{:>6} uploaded, {:>6} already there   {:>6.0} KB",
             if dry_run { "would upload" } else { "store" },
-            uploaded.replays + uploaded.index,
-            uploaded.replays_skipped + uploaded.index_skipped,
+            uploaded.replays + uploaded.index + uploaded.profile,
+            uploaded.replays_skipped + uploaded.index_skipped + uploaded.profile_skipped,
             uploaded.bytes as f64 / 1024.0
         );
         println!(
-            "  {:<17}{:>6} index files, {:>6} replays",
-            "", uploaded.index, uploaded.replays
+            "  {:<17}{:>6} index files, {:>6} profile files, {:>6} replays",
+            "", uploaded.index, uploaded.profile, uploaded.replays
         );
     }
 

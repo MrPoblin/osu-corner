@@ -30,6 +30,18 @@ export const CONFIG = {
   defaultSort: "pp" as SortKey,
 
   /**
+   * How old the profile may be before the card says when it was last fetched.
+   *
+   * **Nothing about the card needs a human**, which is exactly why a silent stop matters: the Worker
+   * refreshes it whenever osu! answers, and `.github/workflows/profile.yml` refreshes the published
+   * snapshot hourly — but GitHub disables scheduled workflows after 60 days without a push, and a
+   * revoked credential looks identical from here. Past this age the card states the date instead of
+   * presenting a month-old rank as if it were current. Raise it and the warning is rarer and less
+   * useful; lower it and a quiet week starts crying wolf.
+   */
+  staleProfileAfterDays: 30,
+
+  /**
    * Start with the drifting triangle field behind the page.
    *
    * The `?triangles` query flag turns it on regardless, so this is the default rather than the only say.
