@@ -90,7 +90,14 @@ jobs:
       # tables, so one block per pattern.
       #
       #   PUBLIC_ZONE    the zone the routes live on, e.g. `example.com`
-      #   PUBLIC_ROUTES  one route pattern per line, e.g. `example.com/osu/*`
+      #   PUBLIC_ROUTES  the patterns, **comma-separated**, e.g.
+      #                  `example.com/osu/*,example.com/api/osu/*`
+      #
+      # Comma-separated rather than one-per-line on purpose. A multi-line repository variable has to be set
+      # with a shell's newline escape, and every shell spells it differently — `$'a\nb'` in bash, a backtick
+      # in PowerShell, neither in cmd — so the wrong one stores the escape as literal text, and TOML then
+      # turns `\n` into a real newline *inside* the pattern. That is a footgun rather than a typo, and a
+      # comma is set identically in every shell. Newlines are still accepted, so an existing value works.
       #
       # Left unset the Worker stays on its `workers.dev` URL, which is the right default for a clone that
       # has not pointed a domain at it yet.
@@ -100,10 +107,21 @@ jobs:
           PUBLIC_ROUTES: ${{ vars.PUBLIC_ROUTES }}
           PUBLIC_ZONE: ${{ vars.PUBLIC_ZONE }}
         run: |
-          while IFS= read -r pattern; do
-            [ -z "$pattern" ] && continue
-            printf '\n[[routes]]\npattern = "%s"\nzone_name = "%s"\n' "$pattern" "$PUBLIC_ZONE" >> wrangler.toml
-          done <<< "$PUBLIC_ROUTES"
+          patterns=$(printf '%s' "$PUBLIC_ROUTES" | tr ',' '\n')
+          while read -r pattern; do
+            if [ -n "$pattern" ]; then
+              printf '\n[[routes]]\npattern = "%s"\nzone_name = "%s"\n' "$pattern" "$PUBLIC_ZONE" >> wrangler.toml
+            fi
+          done <<< "$patterns"
+
+          # A pattern carrying a backtick, a dollar or a backslash is a shell-quoting accident, not a route.
+          # Cloudflare only says it "could not understand route pattern", and by then the script has already
+          # been replaced — a partially-applied deploy. Caught here instead, where the cause is still visible.
+          if grep -qE 'pattern = ".*[`$\\].*"' wrangler.toml; then
+            echo "::error::PUBLIC_ROUTES carries a shell-quoting artefact. Set it to comma-separated patterns with no quoting at all."
+            exit 1
+          fi
+
           tail -12 wrangler.toml
 
       # The build prints the origin it found, but printing is not checking.

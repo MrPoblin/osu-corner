@@ -51,7 +51,7 @@ audio are not stored here — they come from public mirrors, cached by the visit
    | `CLOUDFLARE_ACCOUNT_ID` | secret | the account the Worker lives in |
    | `STORAGE_PUBLIC_BASE` | variable | `storage.public_base` |
    | `PUBLIC_ZONE` | variable | the zone the routes live on |
-   | `PUBLIC_ROUTES` | variable | one route per line, e.g. `example.com/osu/*` and `example.com/api/osu/*` |
+   | `PUBLIC_ROUTES` | variable | the patterns, comma-separated: `example.com/osu/*,example.com/api/osu/*` |
 
    Both routes are needed: the page is at `/osu/`, the profile at `/api/osu/profile` on the site
    root. With `PUBLIC_ROUTES` unset it publishes to `osu-corner.<account>.workers.dev` instead.
