@@ -69,9 +69,9 @@ export function ProfileCard({ mode }: { mode: string }) {
   const osuProfile = typeof id === "number" ? `https://osu.ppy.sh/users/${id}` : null;
 
   /*
-   * How big the name is drawn, read off its own length: a card cannot know how long a name will be, and a long
-   * one would wrap and push the facts down. Three steps, applied at every width — the phone multiplies a smaller
-   * base by the same numbers.
+   * The guard on the name's size, not the size itself: the size comes from the space the name has (`.username`
+   * in the stylesheet), and a card cannot know how long a name will be, so a long one would wrap and push the
+   * facts down. Three steps read off its length. `--name-max` is the ceiling on the result.
    */
   const nameScale =
     username.length > 24 ? 0.55 : username.length > 16 ? 0.7 : username.length > 10 ? 0.85 : 1;

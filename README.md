@@ -110,6 +110,7 @@ Vite rewrites the bundle and `index.html` for you; anything hand-written — a f
 | `osu-corner.local.toml` | **your** values — install paths, your account, the R2 bucket. Merged over the defaults; arrays replace rather than append | **no** — gitignored |
 | `apps/corner/vite.config.ts` | the mount path | yes |
 | `wrangler.toml` | the Worker name, assets, and later the route | yes |
+| `apps/corner/src/config.ts` | what the corner **opens on** — the ruleset, the score in the column (lazer's standardised totals or stable's original V1 ones), the sort, whether the triangle field starts on | yes |
 | `.dev.vars` | the osu! client id and secret — read by **both** the Worker and `osu-ingest`, the latter to fetch a beatmap no install holds | **no** — gitignored |
 
 ## Layout notes

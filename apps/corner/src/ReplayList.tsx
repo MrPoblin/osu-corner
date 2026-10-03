@@ -21,6 +21,7 @@ import {
   starColour,
 } from "./osu.ts";
 import type { Mod, Play, Query } from "./osu.ts";
+import type { ScoreMode } from "./config.ts";
 
 /**
  * The list, its chrome, and the behaviour that drives the background.
@@ -49,9 +50,11 @@ interface Props {
   plays: Play[];
   /** The replay being pointed at, so the shell can recolour itself. */
   onPreview: (play: Play | null) => void;
+  /** Which of the two totals the score column is in, set from the header's toggle. */
+  scoreMode: ScoreMode;
 }
 
-export function ReplayList({ mode, plays, onPreview }: Props) {
+export function ReplayList({ mode, plays, onPreview, scoreMode }: Props) {
   const [query, setQuery] = useState<Query>(DEFAULT_QUERY);
   const [selected, setSelected] = useState(0);
   const [range, setRange] = useState({ start: 0, count: 24 });
@@ -66,10 +69,35 @@ export function ReplayList({ mode, plays, onPreview }: Props) {
    */
   const scrollWanted = useRef(false);
 
-  const results = useMemo(() => search(plays, query), [plays, query]);
-  const modGroups = useMemo(() => modsByCategory(plays), [plays]);
-  const days = useMemo(() => dayCounts(plays), [plays]);
+  /**
+   * **One unit of measure per view.** A play carries two totals — the V1 number it was recorded with, and
+   * osu!'s standardised conversion of it — and the stable view puts the V1 one in the score column while keeping
+   * only the plays that have one. `legacyScore` is null exactly when there was no V1 number (a lazer-era play, or
+   * a stable-era play wearing SV2), so the filter is the `null` test and nothing else.
+   *
+   * Filtering here rather than in `search` means the day shading and the mod counts describe the set on screen.
+   */
+  const pool = useMemo(() => {
+    if (scoreMode !== "stable") return plays;
+
+    return plays.filter((play) => play.legacyScore !== null).map((play) => ({
+      ...play,
+      score: play.legacyScore ?? play.score,
+      /*
+       * The Classic marker goes with it. `CL` is not a mod anyone played — osu!'s own API spells a stable-era
+       * score that way and the ingest appends it to match — and in this view every row carries it, so the badge
+       * says nothing. In the lazer view it stays: there it is what tells the stable-scored rows apart.
+       */
+      mods: play.mods.filter((mod) => mod.acronym !== "CL"),
+    }));
+  }, [plays, scoreMode]);
+
+  const results = useMemo(() => search(pool, query), [pool, query]);
+  const modGroups = useMemo(() => modsByCategory(pool), [pool]);
+  const days = useMemo(() => dayCounts(pool), [pool]);
   /** The scale the pp ramp runs against: this mode's own best play. */
+  /* The pp colour ramp keeps the whole library's ceiling in both views: the scale is a property of the data,
+     and a ramp that moved when the filter did would repaint every row for nothing. */
   const ppMax = useMemo(() => plays.reduce((top, play) => Math.max(top, play.pp), 1), [plays]);
 
   /**

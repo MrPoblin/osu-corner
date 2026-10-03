@@ -7,6 +7,8 @@ import { Sky } from "./Sky.tsx";
 import { MESH_STILL, Triangles, trianglesOn, useEntryFinished } from "./Triangles.tsx";
 import { accentFor, coverUrl, formatNumber } from "./osu.ts";
 import type { Play } from "./osu.ts";
+import { CONFIG } from "./config.ts";
+import type { ScoreMode } from "./config.ts";
 import { useIndexes } from "./useJson.ts";
 
 /**
@@ -28,11 +30,32 @@ const MODES = [
 ] as const;
 
 type ModeId = (typeof MODES)[number]["id"];
+
+/**
+ * The two units of measure the score column can be in, in the order the toggle shows them.
+ *
+ * `stable` is the original V1 total — the number the play actually recorded — and `lazer` is osu!'s standardised
+ * conversion of it. They are not two clients: they are the two things a score can mean.
+ */
+const SCORE_MODES: { id: ScoreMode; label: string; title: string }[] = [
+  { id: "stable", label: "stable", title: "The original V1 totals, for the plays that have one" },
+  { id: "lazer", label: "lazer", title: "osu!'s standardised totals, which every play has" },
+];
 const MODE_IDS = MODES.map((entry) => entry.id);
 
 export default function App() {
-  const [mode, setMode] = useState<ModeId>("osu");
+  const [mode, setMode] = useState<ModeId>(CONFIG.defaultMode);
   const [preview, setPreview] = useState<Play | null>(null);
+  /**
+   * Which of the two totals the score column is in.
+   *
+   * A play carries both — the V1 number it was recorded with, and osu!'s standardised conversion of it — and
+   * only one unit of measure is on screen at a time (§5). `stable` keeps only the plays that *have* a V1 number
+   * (`legacyScore` is null for a lazer-era play, or a stable-era play wearing SV2) and puts that number in the
+   * column; `lazer` is every play, in the standardised totals. What it starts as is a deployment's, in
+   * `config.ts`.
+   */
+  const [scoreMode, setScoreMode] = useState<ScoreMode>(CONFIG.defaultScore);
   const indexes = useIndexes(MODE_IDS);
 
   // Stable, because `ReplayList` reports previews from an effect.
@@ -68,6 +91,27 @@ export default function App() {
               <Chevron />
             </a>
             <h1 className="brand text-[1.05rem]">osu! corner</h1>
+
+            {/*
+             * **The score, not the client.** A pair rather than a switch: there are exactly two units of measure
+             * and the page is always in one. Beside the wordmark it costs no line of its own on a phone — as the
+             * last item of the mode row it read as one more mode, and on a narrow header it wrapped onto a line
+             * by itself.
+             */}
+            <div className="score-mode" role="group" aria-label="Score">
+              {SCORE_MODES.map((entry) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  className="score-mode__option"
+                  aria-pressed={entry.id === scoreMode}
+                  title={entry.title}
+                  onClick={() => setScoreMode(entry.id)}
+                >
+                  {entry.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           <nav className="flex flex-wrap items-center gap-1.5" aria-label="Game mode">
@@ -91,7 +135,7 @@ export default function App() {
                   </button>
                 );
               })}
-          </nav>
+            </nav>
         </header>
 
         <main className="mx-auto w-full max-w-[1240px] px-3 sm:px-6">
@@ -113,7 +157,12 @@ export default function App() {
             )}
 
             {indexes.state === "ready" && (
-              <ReplayList mode={mode} plays={indexes.data[mode] ?? []} onPreview={onPreview} />
+              <ReplayList
+                mode={mode}
+                plays={indexes.data[mode] ?? []}
+                onPreview={onPreview}
+                scoreMode={scoreMode}
+              />
             )}
           </section>
         </main>

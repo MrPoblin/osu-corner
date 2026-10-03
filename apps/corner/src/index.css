@@ -317,6 +317,47 @@
     background-color: var(--color-panel);
   }
 
+  /*
+   * The score toggle: a pair, because there are exactly two units of measure and the page is always in one of
+   * them. Small, flat and quiet so it reads as a setting beside the wordmark rather than as one of the mode
+   * pills — and beside the wordmark it costs no line of its own on a phone.
+   */
+  .score-mode {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-sm);
+    background-color: hsl(240 7% 7% / 0.6);
+  }
+
+  .score-mode__option {
+    height: 24px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: calc(var(--radius-sm) - 3px);
+    background: none;
+    color: var(--color-dim);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    transition:
+      background-color 150ms var(--ease-out),
+      color 150ms var(--ease-out);
+  }
+
+  .score-mode__option[aria-pressed="true"] {
+    background-color: var(--color-accent);
+    color: var(--color-on-accent);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .score-mode__option:hover:not([aria-pressed="true"]) {
+      color: var(--color-text);
+    }
+  }
+
   .control {
     display: inline-flex;
     align-items: center;
@@ -985,6 +1026,10 @@
   /*
    * osu-web's mod badge is a flat hexagon, 120x84 — aspect 10:7 — at `@mod-height-normal: 22px`.
    * These run a little larger so two letters fit comfortably.
+   *
+   * The two letters are **stroked as well as weighted**: the label font's boldest axis is 700, so asking for a
+   * heavier weight only gets a synthesised one, and at this size on a busy coloured hexagon a stroke is what
+   * actually reads. `currentColor` keeps the stroke the same ink as the glyph.
    */
   .mod {
     display: grid;
@@ -992,9 +1037,10 @@
     width: 38px;
     height: 26px;
     clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
-    font-size: 0.64rem;
+    font-size: 0.66rem;
     font-weight: 700;
-    letter-spacing: 0.01em;
+    letter-spacing: 0;
+    -webkit-text-stroke: 0.45px currentColor;
     color: #17141c;
   }
 
@@ -1236,20 +1282,24 @@
    * Two rows: the name, then the details. The picture spans both.
    *
    * ---------------------------------------------------------------------------------------------
-   * **The knobs.** Every position in this lockup is one of the four below. Change a number, reload, done.
+   * **The knobs.** Every position in this lockup is one of the five below. Change a number, reload, done.
    *
    *   --profile-pad          space from the panel's edges, top right bottom
    *   --profile-gap          space between the picture and the text, then between the name and the details
    *   --profile-avatar       the picture's size
    *   --profile-name-lift    raise the name; 0 sits it on the centre line between the panel's top padding
-   *                          and the joined line. Every 1px here moves the name 1px up
+   *                          and the joined line. **Positive raises it, negative lowers it** — `-6px` puts
+   *                          it 6px below that line
+   *   --name-max             the largest the name is ever drawn, in rem. The name otherwise fills the space
+   *                          it has (see `.username`), so this is the ceiling on that, not the size
    * ---------------------------------------------------------------------------------------------
    */
   .profile {
     --profile-pad: 14px 18px 10px;
     --profile-gap: 4px 16px;
     --profile-avatar: 104px;
-    --profile-name-lift: 0px;
+    --profile-name-lift: -8px;
+    --name-max: 4rem;
 
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
@@ -1268,6 +1318,10 @@
     grid-row: 1;
     min-width: 0;
     transform: translateY(calc(-1 * var(--profile-name-lift, 0px)));
+    /* The name sizes itself off **this box's width** (`cqw` in `.username`), so it has to be a query
+       container. `inline-size` containment means the box no longer sizes to its contents — the grid's
+       `minmax(0, 1fr)` column is what gives it a width, which is what the lookup wants anyway. */
+    container-type: inline-size;
   }
 
   /* One line, small: the facts on the left, the grade counts at the other end. */
@@ -1339,11 +1393,14 @@
   .username {
     font-family: var(--font-display);
     /*
-     * The size is the length of the name. A card cannot know how long a name will be, and a long one would
-     * otherwise wrap and push the facts down; three steps (`--name-scale`, set per name in ProfileCard) shrink
-     * it instead. The phone sets a smaller base and multiplies the same steps.
+     * **The name is as big as the space it has.** `20cqw` is a fifth of the name's own column, so the name
+     * grows with the card instead of being a fixed rem; `--name-scale` (set per name in ProfileCard) is the one
+     * guard on top, because a 40-character name at the column's full size would wrap.
+     *
+     * `--name-max` is the ceiling rather than the size: on a wide desktop the column is 550px, and a name that
+     * literally filled it would be a poster. Raise it to let the name grow further.
      */
-    font-size: calc(3rem * var(--name-scale, 1));
+    font-size: min(var(--name-max, 4rem), calc(20cqw * var(--name-scale, 1)));
     font-weight: 600;
     line-height: 1.05;
     overflow-wrap: anywhere;
@@ -1355,6 +1412,11 @@
     display: block;
     grid-column: 1;
     grid-row: 1 / -1;
+    /*
+     * Centred, not stretched. Stretching looked like the way to make the padding equal, but the panel's height is
+     * also its sibling statistic panel's, so the picture became whatever shape that left — 104x134 at a 1100px
+     * window. The picture keeps its own size and the text column beside it is kept shorter instead.
+     */
     align-self: center;
     border-radius: var(--radius-md);
     overflow: hidden;
@@ -1539,7 +1601,7 @@
     .row__mods .mod {
       width: 22px;
       height: 22px;
-      font-size: 0.52rem;
+      font-size: 0.58rem;
     }
 
     /* The three lines shrink; the row does not. It stays 86px because the list is windowed against a
@@ -1583,13 +1645,22 @@
     }
 
     /*
-     * The picture is the tallest thing in the card, so the padding is the whole gap on every side. At 88px it was
-     * **shorter** than the name-and-facts column beside it, so it was centred in the leftover height and sat ~7px
-     * lower from the top than from the left. Equal padding all four sides; the picture keeps the desktop size.
+     * On a phone the picture **is** the tallest thing in the card, so the padding is the whole gap on every side
+     * and all of it is equal. At 88px it was shorter than the name-and-facts column beside it, so it was centred
+     * in the leftover height and sat ~7px lower from the top than from the left; 108px — a square, not a stretch —
+     * puts it clear of the column at every phone width.
      */
     .profile {
+      --profile-avatar: 108px;
       --profile-pad: 12px;
       --profile-gap: 6px 10px;
+      /*
+       * Deliberately below what the column would allow on a wide phone: the name plus the facts plus the badges
+       * is what sets the card's height once it passes the 108px picture, and then the picture is centred in the
+       * leftover height instead of sitting in the padding. This is the ceiling that keeps the picture the tallest
+       * thing up to ~430px, which is what makes the padding equal on every side.
+       */
+      --name-max: 2.9rem;
     }
 
     /*
@@ -1604,6 +1675,17 @@
 
     .grade-stat__count {
       font-size: 0.58rem;
+    }
+
+    @media (max-width: 380px) {
+      /*
+       * The facts are a single 45-character line. Beside a 108px picture under ~380px they only fit on one line at
+       * a slightly smaller face — and one line is what keeps the picture the tallest thing in the card, which is
+       * what keeps the padding equal.
+       */
+      .profile__details {
+        font-size: 0.55rem;
+      }
     }
 
     /*
@@ -1677,10 +1759,6 @@
 
     .mods-filter[data-open="true"] {
       display: flex;
-    }
-
-    .username {
-      font-size: calc(2.5rem * var(--name-scale, 1));
     }
 
     /*

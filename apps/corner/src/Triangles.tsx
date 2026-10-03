@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 
+import { CONFIG } from "./config.ts";
+
 /**
  * osu!'s triangle field.
  *
@@ -83,7 +85,8 @@ const DRIFTING: Tile = { width: 880, height: 520, count: 20, minSize: 22, maxSiz
  * way — this only governs the field behind the page and the arrival sweep.
  */
 export function trianglesOn(): boolean {
-  return flagOn("triangles");
+  /* The field is off unless a deployment asks for it (`config.ts`) or the URL does (`?triangles`). */
+  return flagOn("triangles") || CONFIG.backgroundTriangles;
 }
 
 /** Any switch that is a URL flag rather than a setting. */

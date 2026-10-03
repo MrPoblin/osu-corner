@@ -10,6 +10,8 @@
  * See `poblin-osu-corner-design.md` §14.2 and §14.4.
  */
 
+import { CONFIG } from "./config.ts";
+
 /* -------------------------------------------------------------------------------------------------
  * Grades
  * ---------------------------------------------------------------------------------------------- */
@@ -532,7 +534,7 @@ export const DEFAULT_QUERY: Query = {
   pbOnly: false,
   bestPerDiff: false,
   day: null,
-  sort: "pp",
+  sort: CONFIG.defaultSort,
   descending: true,
 };
 
@@ -643,6 +645,11 @@ export interface ModGroup {
  *
  * `NM` — No Mod — is the one entry that is not an acronym on any play: a play with no mods has an empty
  * mod list, so its count is the number of such plays and `search` treats it specially.
+ *
+ * `CL` is **not offered as a chip.** It is not a mod anyone played: it is how osu! itself spells a
+ * stable-era score (`index.rs` appends it to match the API), and it is true of exactly the plays the header's
+ * stable switch selects — 7,578 of 7,578 here, no exceptions either way. As a filter it is that switch with
+ * less information, since the switch also puts the original score in the score column.
  */
 export function modsByCategory(plays: Play[]): ModGroup[] {
   const counts = new Map<string, number>();
@@ -658,6 +665,8 @@ export function modsByCategory(plays: Play[]): ModGroup[] {
   const groups = new Map<string, ModGroup>();
 
   for (const [acronym, { category }] of Object.entries(MOD_CATALOG)) {
+    if (acronym === "CL") continue;
+
     const count = acronym === "NM" ? noMods : (counts.get(acronym) ?? 0);
     if (count === 0) continue;
 
