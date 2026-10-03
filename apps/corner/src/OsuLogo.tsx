@@ -10,8 +10,8 @@
  *
  * If a deployment ever needs the repository to carry no osu! artwork at all, the swap is this file:
  * point it at `https://osu.ppy.sh/images/layout/osu-logo-white.svg` and add that host to `img-src`.
- * Hotlinking was not chosen here because osu!'s CDN refuses hotlinked requests for its other assets
- * (§14.4), so a hotlinked logo is a logo that can silently disappear.
+ * Hotlinking was not chosen here because osu!'s CDN refuses hotlinked requests for its other assets,
+ * so a hotlinked logo is a logo that can silently disappear.
  */
 export function OsuLogo() {
   return (

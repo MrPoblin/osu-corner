@@ -7,7 +7,6 @@
  *   - star ramp:      lazer `OsuColour.STAR_DIFFICULTY_SPECTRUM`
  *   - mod categories: lazer `OsuColour.ForModType`
  *   - mod names/type: lazer's per-mod class declarations
- * See `poblin-osu-corner-design.md` §14.2 and §14.4.
  */
 
 import { CONFIG } from "./config.ts";
@@ -338,8 +337,8 @@ interface RawIndex {
 
 /**
  * The index ships as tuples rather than objects — every key spelled 8,000 times is 8,000 keys of
- * nothing — so this is a real decode rather than a `JSON.parse` and a read. `poblin-osu-library-plan.md`
- * §7 has the wire format.
+ * nothing — so this is a real decode rather than a `JSON.parse` and a read. The tuple order below
+ * is the wire format.
  */
 export function decodeIndex(raw: RawIndex): Play[] {
   const beatmaps: Beatmap[] = raw.beatmaps.map(

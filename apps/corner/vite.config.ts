@@ -20,7 +20,7 @@ const outDir = `dist${BASE_PATH.replace(/\/$/, "")}`;
  * Where the browser fetches `index-*.json` from, injected as `__INDEX_BASE__`.
  *
  * **The storage host in a build.** The index is the owner's data, so it is not in the repository
- * and not in the Worker's asset bundle (§9) — which also means a play reaches the site on the next
+ * and not in the Worker's asset bundle — which also means a play reaches the site on the next
  * ingest rather than the next deploy. The host comes from the same `storage.public_base` that
  * `tools/hoist-headers.mjs` writes into the CSP, so the policy and the fetch cannot disagree.
  *

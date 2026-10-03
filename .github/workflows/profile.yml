@@ -6,7 +6,7 @@ name: profile
 # `profile-<mode>.json` (a snapshot in the store). The Worker's upstream call leaves from
 # Cloudflare's **shared egress addresses**, and osu! rate-limits **per IP** — so there are windows,
 # measured in hours, in which the route cannot reach the API at all and answers `503` however
-# correct its code is (api plan §5). A card that cannot be refreshed cannot be *updated*, and rank
+# correct its code is. A card that cannot be refreshed cannot be *updated*, and rank
 # moves whether anyone is watching or not: it is other people playing. So the half that must not
 # depend on Cloudflare's address runs here, on a runner's address, on a schedule.
 #

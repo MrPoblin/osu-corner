@@ -1,4 +1,4 @@
-//! The standardised score (§8 step 5a): what osu! shows today for a score that was set under
+//! The standardised score: what osu! shows today for a score that was set under
 //! ScoreV1.
 //!
 //! # Why this is an estimate, and which half of it is not
@@ -357,7 +357,7 @@ fn precision_adjusted_beat_len(slider_velocity: f64, beat_len: f64, highest: f64
 /// `Classic` is the exception worth naming. It is **not in the file** — osu!'s importer appends it,
 /// which `acronyms` does too — and each ruleset prices it differently: osu! at `0.985` when note lock
 /// is on and `0.96` otherwise, while the other three return **1.0** whenever no score is passed, which
-/// is exactly the migration's case. `0.985` is measured, not read: the two plays §5 recorded produce
+/// is exactly the migration's case. `0.985` is measured, not read: the two recorded plays produce
 /// implied multipliers of `1.04 · 1.23 · 0.985` and `1.23 · 0.985`, to six decimal places.
 pub fn standardised_multiplier(mode: Mode, acronyms: &[String]) -> f64 {
     acronyms
@@ -729,12 +729,12 @@ pub struct Achieved {
 /// not.
 ///
 /// **A play with no misses has a determined combo shape**, so the estimator is switched off on it and
-/// the result is exact — which is what makes §5's two recorded plays usable as a verification of the
+/// the result is exact — which is what makes the two recorded plays usable as a verification of the
 /// whole chain rather than of the arithmetic alone.
 ///
 /// `legacy` and `standardised` are passed in rather than resolved here so that the conversion can be
 /// asked what a play *would* have scored under a different multiplier — which is how the multiplier
-/// table was measured against real scores (§8).
+/// table was measured against real scores.
 pub fn convert(
     mode: Mode,
     frame: &Frame,
@@ -832,7 +832,7 @@ pub fn convert(
             // **The coefficients are the other way round at the pinned commit** — `850000 ×
             // comboProportion + 150000 × accuracy^…` there, and this way round today. The current one
             // is used because the server migrates with whatever lazer it is running; nothing local can
-            // check it, because no mania play in this library has an osu!-side converted total (§8).
+            // check it, because no mania play in this library has an osu!-side converted total.
             (150_000.0 * combo_proportion
                 + 850_000.0 * accuracy.powf(2.0 + 2.0 * accuracy)
                 + bonus_proportion)
@@ -1093,7 +1093,7 @@ fn add_osu_spinner(
 
 /// Lazer's taiko combo term: `scoreIncrease / 35 * 2 * (peppyStars + 1) * (min(100, combo) / 10)`.
 ///
-/// Every division is deliberate. `min(100, combo) / 10` is the "combo bonus caps at 100" of §8 and
+/// Every division is deliberate. `min(100, combo) / 10` is the "combo bonus caps at 100" rule and
 /// yields an integer 0–10, and `scoreIncrease / 35` happens *before* the multiplication, so a base
 /// that does not divide evenly is truncated into the term rather than out of it.
 fn taiko_combo_term(score_increase: i32, peppy: i32, combo: i32) -> i32 {

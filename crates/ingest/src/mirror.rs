@@ -60,10 +60,10 @@ use std::time::{Duration, Instant};
 const TOKEN_URL: &str = "https://osu.ppy.sh/oauth/token";
 
 /// The users endpoint. A real constant rather than the test-only `API` below, because the profile
-/// snapshot is fetched by every run that has credentials — that is the whole point of it (§9).
+/// snapshot is fetched by every run that has credentials — that is the whole point of it.
 const USERS_URL: &str = "https://osu.ppy.sh/api/v2/users";
 
-/// Only the validation probe uses these. They stay test-only on purpose: §2's promise is that **no
+/// Only the validation probe uses these. They stay test-only on purpose: the rule is that **no
 /// osu! API request is made to build the library**, so nothing in a real run may ask osu! for a
 /// score.
 #[cfg(test)]
@@ -348,7 +348,7 @@ impl Fetcher {
 
     /// One score, by **modern** score id.
     ///
-    /// §5's example play was documented as returning `legacy_total_score`, `total_score` and
+    /// One example play was documented as returning `legacy_total_score`, `total_score` and
     /// `legacy_score_id` from an endpoint of this shape, which would make it the oracle for a
     /// converted score. Whether this endpoint accepts a stable-era replay's id is exactly what a probe
     /// has to find out rather than assume.
@@ -424,7 +424,7 @@ impl Fetcher {
 
     /// MD5 -> beatmap id, through the first mirror that can do it.
     ///
-    /// **Not the osu! API.** The API serves the profile and nothing else (§2), so the checksum hop
+    /// **Not the osu! API.** The API serves the profile and nothing else, so the checksum hop
     /// that used to live there is a mirror's now — which is also why this needs no token, and why a
     /// clone with no osu! application can still fetch a map it does not hold.
     ///

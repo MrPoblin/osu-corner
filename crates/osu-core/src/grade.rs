@@ -93,15 +93,15 @@ pub fn grade(lazer: bool, mode: u8, accuracy: f64, counts: &[u16; 6], silver: bo
 /// lazer's letter for a play **whatever era it was set in** — the index's second letter.
 ///
 /// For a lazer-era play this is the same answer [`grade`] gives, which is why the column costs
-/// nothing there (measured: +46 bytes across 355 plays, §5). For a stable-era play it is what lazer
+/// nothing there (measured: +46 bytes across 355 plays). For a stable-era play it is what lazer
 /// says about it, and lazer and stable disagree on 28% of this library's stable-era plays — osu!'s
-/// site shows whichever one the score was migrated with (§16).
+/// site shows whichever one the score was migrated with.
 pub fn lazer_grade(mode: u8, accuracy: f64, counts: &[u16; 6], silver: bool) -> Rank {
     silvered(silver, lazer_table(mode, accuracy, counts))
 }
 
 /// Silver is the same letter drawn differently for HD, FL or FI, and osu!'s API returns `SH`, so it
-/// belongs to the stored letter rather than to the UI (§16). Applying it to a letter that is already
+/// belongs to the stored letter rather than to the UI. Applying it to a letter that is already
 /// silver is a no-op, which is what makes it safe to apply to one read out of a blob.
 fn silvered(silver: bool, rank: Rank) -> Rank {
     match (silver, rank) {
@@ -251,7 +251,7 @@ impl Rank {
     /// A separate function rather than serde, because the thing being parsed is the *inside* of a
     /// JSON string field rather than a JSON value, and because an unfamiliar letter should be an
     /// absence rather than a failure: lazer keeps adding mods, and one day it may keep adding
-    /// letters. Used on lazer's own stored rank, which is authoritative where it exists (§16).
+    /// letters. Used on lazer's own stored rank, which is authoritative where it exists.
     pub fn from_acronym(letter: &str) -> Option<Self> {
         Some(match letter {
             "XH" => Rank::XH,

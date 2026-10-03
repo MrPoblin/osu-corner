@@ -1,11 +1,11 @@
 //! The store: the index and the replays, published to a bucket over the S3 API.
 //!
-//! **Why a bucket rather than static assets** (§9): Cloudflare caps static assets at 20,000 files
+//! **Why a bucket rather than static assets**: Cloudflare caps static assets at 20,000 files
 //! per Worker version and re-uploads all of them on every deploy, so 10,000 replays would consume
 //! half that budget permanently and make each deploy enormous. The bucket is free at this size and
 //! its egress always is.
 //!
-//! **Why the index goes too, and not into the repository** (§9): the corner is the public,
+//! **Why the index goes too, and not into the repository**: the corner is the public,
 //! cloneable repository, so a committed index would ship the owner's plays inside the template a
 //! stranger clones. The index carries its own format version, so staleness is detectable by its
 //! reader rather than a production-only skew bug — which is what the "commit it so they deploy
@@ -83,7 +83,7 @@ const REWRITTEN_CACHE_CONTROL: &str = "public, max-age=300, stale-while-revalida
 impl Store {
     /// Built from the config's `storage.endpoint`, `storage.bucket` and `storage.region` plus the two `STORAGE_*`
     /// values in `.dev.vars`. The `Err` is a human-readable reason, not a failure: a clone that has
-    /// created no bucket yet is a **supported state** and the run reports it as such (§14).
+    /// created no bucket yet is a **supported state** and the run reports it as such.
     pub fn new(
         endpoint: &str,
         bucket: &str,

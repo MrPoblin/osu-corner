@@ -54,7 +54,7 @@ struct Staged {
 /// **This is what a scheduled run does.** The game-folder walk, the pricing and the index are all
 /// skipped, so it finishes in seconds and needs no installs — which is the point: it runs on an
 /// address osu! answers, so the card keeps updating while the Worker's own upstream call is
-/// rate-limited (api plan §5).
+/// rate-limited.
 ///
 /// The profile is *not* a thing you refresh by hand: osu! moves your rank whether you are looking or
 /// not, so this is wired to a schedule (`.github/workflows/profile.yml`).
@@ -173,7 +173,7 @@ pub fn build(
     for source in sources {
         let key = source.path.display().to_string();
         // Registered before it is read: `blob` addresses a source by an integer, which is what stops
-        // the same absolute path being stored on all 175,000 rows (§10).
+        // the same absolute path being stored on all 175,000 rows.
         ledger.register(&key)?;
         let known: Known = ledger.known(&key)?;
         let started = Instant::now();
@@ -358,7 +358,7 @@ pub fn build(
     //
     // Every play is priced for real rather than sampled, because this is what the index stores.
     // Plays are grouped by map first so a map is decoded once instead of once per play — a map
-    // averages 2.65 plays here (§16) and decoding is the expensive half.
+    // averages 2.65 plays here and decoding is the expensive half.
     let pricing = Instant::now();
     let mut by_map: HashMap<String, Vec<Staged>> = HashMap::new();
     // What the index is written from: the priced plays and one description per map they reference.
@@ -419,7 +419,7 @@ pub fn build(
     let mut priced = 0u64;
     let mut stars: Vec<f64> = Vec::new();
     let mut pps: Vec<f64> = Vec::new();
-    // The verdicts, which the index will store per play (§5): one accuracy and two letters, the
+    // The verdicts, which the index will store per play: one accuracy and two letters, the
     // era's and lazer's. Collected and reported so a change in the rules shows up as a different
     // distribution rather than as silence.
     let mut accuracies: Vec<f64> = Vec::new();
@@ -577,8 +577,8 @@ pub fn build(
     // ------------------------------------------------------------------- store
     //
     // After the index, and in the same step as the replays it names, so an index can never point
-    // at an object the bucket does not have (§9). `None` is no store being configured, which is a
-    // supported state rather than a failure (§14) — the line above the run's output says why.
+    // at an object the bucket does not have. `None` is no store being configured, which is a
+    // supported state rather than a failure — the line above the run's output says why.
     let uploaded = {
         let objects: Vec<(String, String)> = indexed
             .iter()
@@ -869,7 +869,7 @@ fn kind_name(kind: SourceKind) -> &'static str {
 /// The name is `<md5>-<ticks>`. The ticks are .NET's from year 1, and staging already subtracted
 /// `504911232000000000`, so what is left reads as FILETIME ticks from 1601: one subtraction of
 /// `116444736000000000`, then a division by ten million. **Round, and do not think about it
-/// further** — §5's verified example is `133493808368081330` becoming `1704907237`, which is the
+/// further** — the verified example is `133493808368081330` becoming `1704907237`, which is the
 /// rounded value of `1704907236.808…`, and whether that last second is rounded or dropped changes
 /// nothing any filter, sort or grouping here is sensitive to. The play key keeps full precision
 /// regardless.
@@ -883,7 +883,7 @@ fn played_at(key: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
-    /// §5's verified pair, which is the only reason this conversion is trusted: a real staged
+    /// The verified pair, which is the only reason this conversion is trusted: a real staged
     /// filename becomes the real Unix second osu! reports for that play.
     #[test]
     fn a_play_key_becomes_a_unix_timestamp() {

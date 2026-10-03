@@ -3,7 +3,7 @@
 //! Two inputs to the score recalculation cannot be read from any local file: which accuracy osu!
 //! reports for a stable-era play, and where the *converted* total score can be read back from. This
 //! module asks, rather than assuming, and it is `#[cfg(test)]` for the same reason it is ignored by
-//! default: a real run must never make an osu! API request (§2).
+//! default: a real run must never make an osu! API request.
 //!
 //! Run one with:
 //!
@@ -270,7 +270,7 @@ fn where_can_the_converted_score_be_read() {
 }
 
 /// Does `/api/v2/scores/{id}` accept a **stable-era** replay's id, and does it carry the converted
-/// total score? §5 documented exactly that shape for this account's play `4566394317`
+/// total score? That shape was documented for this account's play `4566394317`
 /// (`legacy_total_score: 706543`, `total_score: 1202898`), so if it works, 5a has its oracle.
 #[test]
 #[ignore = "paced network probe"]
@@ -309,7 +309,7 @@ fn can_the_converted_score_be_read_for_a_stable_play() {
 
 /// Is the frame a **maximum**, and is it a tight one?
 ///
-/// This is §8's gate for the frame, and it needs **no network**: the `.osr` records the V1 total, and
+/// This is the gate for the frame, and it needs **no network**: the `.osr` records the V1 total, and
 /// an earlier probe confirmed 39/39 that osu!'s own value equals the file's.
 ///
 /// An earlier version of this check asserted that a perfect full combo *equals* its frame, and it
@@ -339,7 +339,7 @@ fn the_frame_is_an_upper_bound_that_holds() {
     // and a play with **no misses** has left nothing on the table — so its recorded total should sit
     // right up against its frame. That is what shows the frames are tight rather than merely safe, and
     // it is the only tightness evidence taiko, catch and mania can have: no osu!-side converted total
-    // exists for any of their plays here (§8).
+    // exists for any of their plays here.
     let mut closest_by_mode: BTreeMap<String, (f64, String)> = BTreeMap::new();
     let mut any_by_mode: BTreeMap<String, (f64, String)> = BTreeMap::new();
     let mut frames: HashMap<String, crate::score::Frame> = HashMap::new();
@@ -680,15 +680,15 @@ fn the_standardised_multiplier_matches_real_lazer_scores() {
 /// The measurement is a factor, not a comparison: the conversion is linear in the standardised
 /// multiplier, so evaluating it at 1.0 gives the pre-mod value exactly, and
 /// `osu!'s total / pre-mod value` is the multiplier the server actually applied — mods, Classic and
-/// all. Two plays whose totals §5 recorded before the API stopped serving them give two independent
+/// all. Two plays whose totals were recorded before the API stopped serving them give two independent
 /// readings, and they disagree with each other if the wrong assumption is in the port.
 #[test]
 fn does_classic_scale_a_stable_era_converted_score() {
-    // The two converted totals §5 recorded from the API while it still served them, keyed by the
+    // The two converted totals recorded from the API while it still served them, keyed by the
     // V1 legacy score the `.osr` itself holds.
     const RECORDED: [(i64, i64, &str); 2] = [
-        (706_543, 1_202_898, "HDDT — §5's worked example"),
-        (2_956_090, 1_134_257, "DT — §5's other verified play"),
+        (706_543, 1_202_898, "HDDT — the worked example"),
+        (2_956_090, 1_134_257, "DT — the other verified play"),
     ];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

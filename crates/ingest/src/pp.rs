@@ -21,7 +21,7 @@
 //! *"Whereas osu! simply times out on malicious maps, rosu-pp does not. To prevent potential
 //! performance/memory issues, it is recommended to check beforehand whether a map is too
 //! suspicious for further calculation."* Every `.osu` here either came off a mirror where **only
-//! the MD5 was verified and the contents were never vetted** (§10), or came out of a game install
+//! the MD5 was verified and the contents were never vetted**, or came out of a game install
 //! that a stranger's clone will point at their own folders. A crafted `.osu` is attacker-controlled
 //! input, so `checked_calculate` is used at both entry points rather than `calculate`.
 
@@ -47,7 +47,7 @@ use serde::de::DeserializeSeed;
 /// 13.8, **in both directions** — the signature of an algorithm change rather than a plumbing bug,
 /// and a plumbing bug would not leave osu!taiko matching to four decimals. Chasing live osu!
 /// would mean the index silently changing under a deployed site, which is the opposite of what
-/// pinning is for (§8).
+/// pinning is for.
 ///
 /// The version half is asserted against `Cargo.lock` by a test below, so bumping the dependency
 /// fails the build instead of leaving a stale string behind. The commit half is only documented in
@@ -69,11 +69,11 @@ pub struct Attributes {
     /// hand-written classic accuracy reproduced only 237 of lazer's own stored letters.
     pub accuracy: f64,
     /// The letter that fits the play's era — stable's rules for a stable-era replay, lazer's for a
-    /// lazer-era one. What osu! shows for it (§5).
+    /// lazer-era one. What osu! shows for it.
     pub rank: Rank,
     /// lazer's letter for the same play. Identical to `rank` on a lazer-era play and different on 28%
     /// of stable-era ones, because osu!'s site can show either depending on whether the score was
-    /// migrated (§5, §16).
+    /// migrated.
     pub lazer_rank: Rank,
 }
 
@@ -121,11 +121,11 @@ pub struct Play {
     pub version: i32,
     /// The slider counts and their maxima, from the blob's named statistics. **Only a lazer-era file
     /// has them**, and they are what lazer's accuracy counts and stable's does not — the difference
-    /// behind 28% of stable-era plays having two possible letters (§16).
+    /// behind 28% of stable-era plays having two possible letters.
     pub sliders: Option<SliderCounts>,
     /// **lazer's own letter, where the file recorded one.** Authoritative when present: it is the
     /// only field that can say a score failed, and it is lazer's finished answer rather than an
-    /// input. 305 of this library's 355 lazer-era replays have one (§16).
+    /// input. 305 of this library's 355 lazer-era replays have one.
     pub stored_rank: Option<String>,
 }
 
@@ -235,7 +235,7 @@ const fn game_mode(mode: u8) -> GameMode {
 const CLASSIC: &str = "CL";
 
 /// A beatmap, decoded once and reused for every play on it. A map averages 2.65 plays in this
-/// library (§16) and decoding is the expensive half, so this is parsed once per map rather than
+/// library and decoding is the expensive half, so this is parsed once per map rather than
 /// once per play.
 pub struct Map {
     inner: Beatmap,
@@ -259,7 +259,7 @@ impl Map {
     /// The map's own star rating, with no mods.
     ///
     /// This is the number osu! reports as `difficulty_rating`, and the only star rating the index can
-    /// store once per map (§5) — a play's own stars depend on its mods, so they would be a column per
+    /// store once per map — a play's own stars depend on its mods, so they would be a column per
     /// play saying what the map and the mods already imply.
     pub fn stars(&self) -> Result<f64, Error> {
         Difficulty::new()
@@ -268,7 +268,7 @@ impl Map {
             .map_err(|error| Error::Suspicious(format!("{error:?}")))
     }
 
-    /// The map's V1 reference frame, with the peppy-star multiplier it needs (§8 step 5a).
+    /// The map's V1 reference frame, with the peppy-star multiplier it needs.
     ///
     /// Both halves come from one difficulty calculation: `legacy_score_base_multiplier` is
     /// `rosu-pp`'s public version of the multiplier lazer's simulator computes, and it is computed
@@ -409,7 +409,7 @@ impl Map {
 
         // Silver is the same letter drawn differently, and osu!'s API returns `SH`, so it is part of
         // the stored letter rather than a display concern. Hidden and Flashlight have bitflags;
-        // Fade In only ever arrives as a lazer acronym (§16).
+        // Fade In only ever arrives as a lazer acronym.
         let silver = play.mods & (1 << 3) != 0
             || play.mods & (1 << 10) != 0
             || play.mods_names.iter().any(|name| name == "FI");
@@ -426,7 +426,7 @@ impl Map {
             .unwrap_or_else(|| lazer_grade(play.mode, accuracy, &play.counts, silver));
 
         // The era's own rule: a stable-era play was graded by stable when it was set, and osu!'s
-        // site still shows that letter for it unless the score was migrated server-side (§16).
+        // site still shows that letter for it unless the score was migrated server-side.
         let rank = if lazer {
             lazer_rank
         } else {

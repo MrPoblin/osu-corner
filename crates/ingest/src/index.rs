@@ -1,4 +1,4 @@
-//! The index (§5): the one artifact the site reads.
+//! The index: the one artifact the site reads.
 //!
 //! One file per game mode, in a fixed field order, and the reason a play costs ~14 bytes rather
 //! than a JSON object: **a play names its map and its mods by index, not by value.** Those two
@@ -10,10 +10,10 @@
 //! Three things are deliberately absent, all because they are derivable:
 //!
 //! - **No personal best.** The PB progression is computed in the browser from `pp` and `played_at`
-//!   (§7); a stored PB would be a second source of truth that can disagree with the rows.
+//!   rather than stored; a stored PB would be a second source of truth that can disagree with the rows.
 //! - **No cover, no weight, no judgement counts.** A cover is rebuilt from `beatmapset_id`, a weight
-//!   from pp and position, and the counts are not on screen at any size (§5).
-//! - **No ranked-status verdict** — deferred by the owner, so no `beatmaps` field carries one (§5).
+//!   from pp and position, and the counts are not on screen at any size.
+//! - **No ranked-status verdict** — deferred by the owner, so no `beatmaps` field carries one.
 
 use crate::pp;
 use crate::score;
@@ -27,7 +27,7 @@ use std::path::Path;
 
 /// What produced the `score` column. **Not a version, because the number is ours**: it is this
 /// tool's implementation of lazer's conversion, and saying so is the honest label the owner asked for
-/// when the API turned out not to expose osu!'s own converted value (§8).
+/// when the API turned out not to expose osu!'s own converted value.
 ///
 /// Four commits, because the port genuinely draws on four and naming one would be false.
 ///
@@ -57,24 +57,24 @@ const VERSION: u32 = 2;
 
 /// The `mode` byte of an `.osr`, and the file each mode's plays go in. All four are always written,
 /// even when empty: a missing file would 404 the fetch, while an empty one is a mode with no plays
-/// and the browser has to handle that anyway (§6).
+/// and the browser has to handle that anyway.
 pub(crate) const MODES: [(u8, &str); 4] = [(0, "osu"), (1, "taiko"), (2, "catch"), (3, "mania")];
 
 /// osu!'s mod bit for `SV2`. The one thing that moves a stable-era play's recorded score into the
-/// modern column, because under ScoreV2 the client recorded a standardised number (§5).
+/// modern column, because under ScoreV2 the client recorded a standardised number.
 const SCORE_V2: i32 = 1 << 29;
 
 /// A beatmap as the index describes it: what the `.osu` file says, and its own star rating.
 ///
 /// The stars are **no-mod on purpose** — this is the map's rating, the number osu! reports as
 /// `difficulty_rating`, and the only one that can be stored once per map. A play's *modded* stars
-/// are not stored at all: nothing filters or sorts on them (§5), and they are re-derivable from the
+/// are not stored at all: nothing filters or sorts on them, and they are re-derivable from the
 /// map plus the mods.
 pub struct Beatmap {
     pub meta: osu::Beatmap,
     pub stars: f64,
     /// The map's V1 reference frame **per mode a play on it is in**, which the recalculation needs for
-    /// every play (§8 step 5a). Keyed by the `.osr`'s mode byte, because one map can carry plays in
+    /// every play. Keyed by the `.osr`'s mode byte, because one map can carry plays in
     /// more than one ruleset and the frame is not the same for both.
     pub frames: HashMap<u8, score::Frame>,
     /// The number of columns lazer would give this map as a **mania convert**, or `None` when the map
@@ -95,19 +95,19 @@ pub struct Play {
     /// a lazer-era one. Which column it lands in is [`scores`]' job.
     pub recorded: i64,
     /// osu!'s id for the score, where osu! has one. A play with none is one osu! never saw — 628 of
-    /// 8,000 here (§8).
+    /// 8,000 here.
     pub online_id: Option<i64>,
     /// The play key, `(beatmap MD5, score timestamp)`. Used as `score_id` when there is no online
-    /// id, because **this value is also the object key** (§9) — so a play and its replay can
+    /// id, because **this value is also the object key** — so a play and its replay can
     /// never end up filed under two different names.
     pub key: String,
-    /// Unix seconds (§5).
+    /// Unix seconds.
     pub played_at: i64,
 }
 
 impl Play {
     /// The name this play's replay takes in the store: the online score id when osu! gave one, else the
-    /// play key (§9). One function, so the index's own `score_id` and the uploader cannot disagree
+    /// play key. One function, so the index's own `score_id` and the uploader cannot disagree
     /// about what a play is called — they are the same value for the same reason.
     pub fn object_key(&self) -> String {
         self.online_id
@@ -154,7 +154,7 @@ pub fn write(
         // **Ordered so a rebuild of one library is byte-identical.** Nothing here may depend on the
         // order a `HashMap` happened to iterate in, or two runs over the same library would produce
         // two different files and every diff would be noise. Chronological, with the play key as the
-        // tiebreak because two plays can share a second (§5).
+        // tiebreak because two plays can share a second.
         plays.sort_by(|a, b| (a.played_at, &a.key).cmp(&(b.played_at, &b.key)));
 
         let file = mode_file(mode, &plays, maps, &mut report)?;
@@ -184,7 +184,7 @@ struct File {
     v: u32,
     mode: u8,
     /// The `rosu-pp` release and the osu!lazer commit it ports. Rows then carry the version that
-    /// priced them, so a pending reprocess after a rebalance is visible rather than guessed at (§8).
+    /// priced them, so a pending reprocess after a rebalance is visible rather than guessed at.
     ppver: &'static str,
     /// The score algorithm and its commit. `null` until step 5a lands, because naming an algorithm
     /// that has not run yet would be a claim this file cannot support.
@@ -269,7 +269,7 @@ fn mode_file(
 
         rows.push(json!([
             // The online id where osu! has one, else the play key. Both are usable as the object
-            // key (§9), which is why one slot carries either.
+            // key, which is why one slot carries either.
             play.online_id
                 .map_or_else(|| Value::String(play.key.clone()), Value::from),
             beatmap,
@@ -306,7 +306,7 @@ fn mode_file(
 /// carried a setting.
 ///
 /// Two plays differing only by a setting **must** be two entries, or one play's setting is silently
-/// attributed to the other (§5), which is what carrying the settings in the key prevents.
+/// attributed to the other, which is what carrying the settings in the key prevents.
 struct Mods {
     label: String,
     settings: Option<Value>,
@@ -358,7 +358,7 @@ fn mods_of(play: &pp::Play) -> Mods {
 ///
 /// Stable **is** Classic, and osu!'s own API says so — it returns `DT, HD, CL` for a play whose
 /// bitfield is only `HDDT`. The mod is nowhere in the file, so `CL` is derived from the era and
-/// appended, which makes our spelling match osu!'s instead of omitting Classic from 7,645 rows (§5).
+/// appended, which makes our spelling match osu!'s instead of omitting Classic from 7,645 rows.
 fn label(play: &pp::Play) -> String {
     // The acronyms and their order come from one place, shared with the score recalculation. A second
     // spelling here would be a second thing to keep in step, and a badge that disagreed with the
@@ -376,7 +376,7 @@ fn settings_of(play: &pp::Play) -> Option<Value> {
         .then_some(Value::Array(raw))
 }
 
-/// §5's two score columns, of which **exactly one is ever computed**.
+/// The two score columns, of which **exactly one is ever computed**.
 ///
 /// A lazer-era play was *scored* by the standardised system, so it never had a V1 number and its
 /// recorded value is the `score`. A stable-era play's recorded value is the V1 one, so it is the
@@ -384,7 +384,7 @@ fn settings_of(play: &pp::Play) -> Option<Value> {
 ///
 /// `null` is the honest value in both empty cases, **never a fallback to the other column**: a
 /// fallback would put two units of measure inside one view, and the single rule that keeps the scores
-/// coherent is one unit per view (§5).
+/// coherent is one unit per view.
 ///
 /// The case that must not be missed: a stable-era play wearing `SV2` recorded an already
 /// standardised score, so it belongs in the `score` column like a lazer-era play. osu! special-cases
@@ -471,7 +471,7 @@ fn mania_column_factor_for(play: &Play, beatmap: &Beatmap) -> f64 {
     score::mania_column_factor(original, if dual { columns * 2 } else { columns })
 }
 
-/// The stored letter, as its position in §5's wire order: `XH` 0 through `F` 8.
+/// The stored letter, as its position in the wire order: `XH` 0 through `F` 8.
 ///
 /// An exhaustive match rather than a table lookup, because this is the one place that decides where
 /// a letter sits in a contract already written into browsers. A new variant in `Rank` then breaks

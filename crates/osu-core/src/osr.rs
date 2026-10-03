@@ -33,7 +33,7 @@
 //! trailing field is `-1` in **all 355**, while the blob holds a real id in **326** of them — the
 //! two agree exactly once. So reading the trailing field alone reports 326 submitted plays as
 //! never-submitted, and that value is the index's `score_id` **and** the R2 object key that falls
-//! back to it (§5). The blob therefore wins whenever it decodes; the trailing field is only the
+//! back to it. The blob therefore wins whenever it decodes; the trailing field is only the
 //! answer when there is no blob. The blob is a standard LZMA-alone stream — `5d 00 00 20 00`, 2 MiB
 //! dictionary, then an 8-byte uncompressed size — so it needs no header reconstruction.
 
@@ -76,7 +76,7 @@ impl std::error::Error for Error {}
 /// same numbers `large_tick_hits`, `small_tick_hits` and `slider_end_hits`, and those names are used
 /// here so the wiring between the two is obvious. **Lazer's accuracy counts these where stable's
 /// does not**, which is the whole reason the two clients disagree about 28% of stable-era plays
-/// (§16); they are also what `rosu-pp` wants as tick inputs when pricing a play.
+/// counts; they are also what `rosu-pp` wants as tick inputs when pricing a play.
 ///
 /// **The maxima come from here rather than from the map**, because that is what lazer's own
 /// `StandardisedScoreMigrationTools.ComputeAccuracy` divides by — `rosu-pp` infers map-derived
@@ -105,7 +105,7 @@ pub struct Header {
     /// **not** a portable identity. See [`Header::key`].
     pub replay_md5: String,
     /// `[count300, count100, count50, countGeki, countKatu, countMiss]`. What judgement names mean
-    /// depends on the ruleset (§6). Verified correct even in lazer-era files, which also carry a
+    /// depends on the ruleset. Verified correct even in lazer-era files, which also carry a
     /// newer named `statistics` object in the appended blob: over 355 of them, every one had real
     /// counts here and the numbers agreed, so the index's accuracy derives from these and does not
     /// need the newer encoding.
@@ -134,7 +134,7 @@ pub struct Header {
     pub online_score_id: Option<i64>,
     /// lazer's own letter for this play, out of the appended blob. **The only place a failed score
     /// can be told apart from a passed one** — no field anywhere in the file says so, so a letter
-    /// derived from accuracy alone would present a failed replay as though it had passed (§16).
+    /// derived from accuracy alone would present a failed replay as though it had passed.
     /// Measured: present in 305 of this library's 355 lazer-era replays, two of them `"F"`, and
     /// `None` for every stable-era replay, which records no rank at all. This is lazer's finished
     /// answer rather than an input, so nothing here should second-guess it — see [`crate::grade`].
@@ -329,7 +329,7 @@ struct Appended {
     rank: Option<String>,
     /// The score before the mod multiplier was applied. Because a lazer-era `score` is the *with*-mods
     /// value, the pair recovers the multiplier the client used — which is what makes the standardised
-    /// multiplier table checkable against real scores instead of only against source (§8).
+    /// multiplier table checkable against real scores instead of only against source.
     total_score_without_mods: Option<i64>,
     /// The named `statistics` lazer writes, and the `maximum_statistics` its accuracy divides by.
     /// Measured present in every one of this library's 355 lazer-era blobs. Only the slider counts

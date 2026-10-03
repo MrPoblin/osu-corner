@@ -56,7 +56,7 @@ declare const __INDEX_BASE__: string;
  * when none is.
  *
  * The index is the owner's data, so it is deliberately not in the repository and not in the Worker's
- * asset bundle (§9) — a play reaches the site on the next ingest rather than the next deploy. The
+ * asset bundle — a play reaches the site on the next ingest rather than the next deploy. The
  * host is the same `storage.public_base` the CSP is built from, so the policy allows exactly the
  * host this fetches.
  */

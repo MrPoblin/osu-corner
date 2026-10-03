@@ -1,8 +1,8 @@
 //! What a profile response is allowed to contain, and the projection that enforces it.
 //!
 //! An **allowlist**, not a denylist: a denylist publishes anything osu! adds later before anyone
-//! has seen it. The list is `poblin-osu-corner-design.md` §2 and nothing else — the fields the card
-//! renders. Upstream answers with 9.0 KB; this keeps 1.0 KB of it, and passthrough would also
+//! has seen it. The list is the fields the card renders and nothing else. Upstream answers with
+//! 9.0 KB; this keeps 1.0 KB of it, and passthrough would also
 //! publish `account_history` and `previous_usernames`.
 //!
 //! **Here rather than in the Worker, because two things now shape a profile.** The Worker projects

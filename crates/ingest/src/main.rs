@@ -198,7 +198,7 @@ fn main() -> ExitCode {
 
     // Built here rather than inside `library::build` so that the reason an upload will not happen
     // is printed once, before anything runs, instead of surfacing at the end. The credentials come
-    // from `.dev.vars`, the same file the osu! ones live in (§14); their absence is a supported
+    // from `.dev.vars`, the same file the osu! ones live in; their absence is a supported
     // state rather than a failure, because a clone that has created no bucket yet still has to
     // complete a run.
     let bucket = match store::Store::new(
@@ -240,7 +240,7 @@ fn main() -> ExitCode {
     }
 
     // Whether a beatmap no install holds can be looked up is a property of the **mirror list**, not
-    // of the osu! application: the checksum hop is a mirror's now and needs no token (§16), which
+    // of the osu! application: the checksum hop is a mirror's now and needs no token, which
     // is what makes a clone with no osu! application fetch maps exactly as well as one with.
     println!(
         "  fetching: {}",

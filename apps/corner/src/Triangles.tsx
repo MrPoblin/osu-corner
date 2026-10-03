@@ -82,7 +82,12 @@ const DRIFTING: Tile = { width: 880, height: 520, count: 20, minSize: 22, maxSiz
  *
  * A URL flag rather than a code change so the two can be compared without a rebuild, and so the answer
  * to "can I see it without them" is a reload rather than an edit. The rows keep their own mesh either
- * way — this only governs the field behind the page and the arrival sweep.
+ * way.
+ *
+ * **This governs the field behind the page and nothing else.** It used to gate the arrival sweep as
+ * well, so switching the field off — which is what happened when the rows grew their own mesh —
+ * silently removed the entry sequence too. The sweep is the one orchestrated moment per visit, and
+ * `prefers-reduced-motion` is what turns it off.
  */
 export function trianglesOn(): boolean {
   /* The field is off unless a deployment asks for it (`config.ts`) or the URL does (`?triangles`). */
@@ -244,6 +249,11 @@ const RISING: Rising[] = (() => {
   });
 })();
 
+/**
+ * The arrival sweep: 26 outlines rising once, then gone.
+ *
+ * Not the drifting field — that is `GroundTriangles`, and the two are independent on purpose.
+ */
 export function Triangles() {
   return (
     <>

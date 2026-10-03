@@ -39,8 +39,8 @@ mkdirSync(dirname(target), { recursive: true });
 
 /*
  * `__STORAGE_ORIGIN__` is the one deployment-specific CSP entry: the hostname the browser fetches
- * the index and the replays from (§9). It is not written into `_headers` because that file is
- * committed and the hostname is per-deployment — a clone must not inherit somebody else's (§14).
+ * the index and the replays from. It is not written into `_headers` because that file is
+ * committed and the hostname is per-deployment — a clone must not inherit somebody else's.
  *
  * The value comes from `storage-base.mjs`, the same reader `vite.config.ts` uses to point the index
  * fetch at the storage host, so the CSP cannot allow one host while the frontend fetches another.

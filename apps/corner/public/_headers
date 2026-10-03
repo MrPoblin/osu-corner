@@ -16,9 +16,9 @@
 #   connect-src / media-src __STORAGE_ORIGIN__
 #     The replay `.osr` files and the index, fetched by the browser straight from the bucket's own
 #     hostname rather than through a Worker, so a replay view is a CDN read and not an invocation
-#     (§9). The hostname is deliberately NOT written here: this file is committed and the host is
+#     The hostname is deliberately NOT written here: this file is committed and the host is
 #     per-deployment, so it is injected at build time from `storage.public_base` in the config by
-#     tools/hoist-headers.mjs. A clone must not inherit somebody else's hostname (§14).
+#     tools/hoist-headers.mjs. A clone must not inherit somebody else's hostname.
 #
 #     An empty `storage.public_base` removes the entry rather than leaving a broken one, which is
 #     the right policy for a deployment serving the replays as its own static assets. Wrong either

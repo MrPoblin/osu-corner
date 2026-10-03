@@ -6,7 +6,7 @@ import { Tip } from "./Tip.tsx";
 import type { Async, Profile } from "./useJson.ts";
 
 /**
- * The profile card (design §2). One request — the Worker's live route, with the snapshot
+ * The profile card. One request — the Worker's live route, with the snapshot
  * `osu-ingest` publishes as the fallback (see `useProfile`) — and every field shown comes from it.
  *
  * The picture and the name are the prominent half, side by side; everything else is smaller and
@@ -167,7 +167,7 @@ function countryName(code: string): string {
 }
 
 /**
- * The osu! mark, drawn from osu-web's own logo (§14.4).
+ * The osu! mark, drawn from osu-web's own logo.
  *
  * The logo is white artwork, so it sits on osu!'s pink the way the game's own icon does.
  */

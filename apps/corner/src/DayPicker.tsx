@@ -6,8 +6,8 @@ import { dayKey, formatNumber } from "./osu.ts";
  * The calendar. It has **three zoom levels** — days, months, years — and only ever offers days that
  * have plays, so selecting one can never land on an empty list.
  *
- * The design had this as an open question (§13: "date picker versus a year/month/day heatmap"); it is
- * both, because the same count data shades whichever level you are looking at.
+ * It is both a date picker and a heatmap, because the same count data shades whichever level you
+ * are looking at.
  */
 
 const DOW = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];

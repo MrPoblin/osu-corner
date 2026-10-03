@@ -1,4 +1,4 @@
-//! `.dev.vars`, the file secrets live in and nothing else does (§14).
+//! `.dev.vars`, the file secrets live in and nothing else does.
 //!
 //! Two parts of the ingest read it — the beatmap fetcher for its osu! client credentials, and the
 //! store uploader for its access key pair — so the parsing lives here rather than in either of them.

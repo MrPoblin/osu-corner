@@ -4,7 +4,7 @@ import type { CSSProperties } from "react";
 import { ProfileCard } from "./ProfileCard.tsx";
 import { ReplayList } from "./ReplayList.tsx";
 import { Sky } from "./Sky.tsx";
-import { MESH_STILL, Triangles, trianglesOn, useEntryFinished } from "./Triangles.tsx";
+import { MESH_STILL, Triangles, useEntryFinished } from "./Triangles.tsx";
 import { accentFor, apiMode, coverUrl, formatDate, formatNumber } from "./osu.ts";
 import type { Play } from "./osu.ts";
 import { CONFIG } from "./config.ts";
@@ -19,7 +19,7 @@ import { staleSince, useIndexes, useProfile } from "./useJson.ts";
  * artwork itself (osu!'s CDN sends no CORS header, so the browser cannot read those pixels).
  *
  * API paths are site-wide at `/api/osu/...` so a clone mounted at any base gets the same route
- * (`poblin-osu-api-plan.md` §1); everything else goes through `import.meta.env.BASE_URL`.
+ * everything else goes through `import.meta.env.BASE_URL`.
  */
 
 const MODES = [
@@ -50,7 +50,7 @@ export default function App() {
    * Which of the two totals the score column is in.
    *
    * A play carries both — the V1 number it was recorded with, and osu!'s standardised conversion of it — and
-   * only one unit of measure is on screen at a time (§5). `stable` keeps only the plays that *have* a V1 number
+   * only one unit of measure is on screen at a time. `stable` keeps only the plays that *have* a V1 number
    * (`legacyScore` is null for a lazer-era play, or a stable-era play wearing SV2) and puts that number in the
    * column; `lazer` is every play, in the standardised totals. What it starts as is a deployment's, in
    * `config.ts`.
@@ -84,7 +84,18 @@ export default function App() {
     >
       <Sky cover={preview ? coverUrl(preview.beatmap.set) : null} />
 
-      {trianglesOn() && !entered && (
+      {/**
+        * The arrival sweep — the one orchestrated moment per visit.
+        *
+        * **Deliberately not gated by `trianglesOn()`.** That switch governs the drifting field behind
+        * the page, and for a while it governed this too — so turning the field off, which is what
+        * happened when the rows grew their own mesh, silently took the entry sequence with it and left
+        * nothing but the content wipe. The two are different things: the field is decoration you can
+        * live without, the sweep is the answer to arriving from the bio page as a hard cut.
+        *
+        * The only thing that turns it off is `prefers-reduced-motion`, in the CSS.
+        */}
+      {!entered && (
         <div className="entry" aria-hidden="true">
           <Triangles />
         </div>
