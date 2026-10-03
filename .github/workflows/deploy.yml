@@ -84,6 +84,28 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # The route onto a real domain is the one thing that cannot be committed: it names the deployer's own
+      # zone, and a clone must not inherit somebody else's. It arrives as two repository variables and is
+      # appended to the checked-out config, which the runner throws away — `[[routes]]` is a TOML array of
+      # tables, so one block per pattern.
+      #
+      #   PUBLIC_ZONE    the zone the routes live on, e.g. `example.com`
+      #   PUBLIC_ROUTES  one route pattern per line, e.g. `example.com/osu/*`
+      #
+      # Left unset the Worker stays on its `workers.dev` URL, which is the right default for a clone that
+      # has not pointed a domain at it yet.
+      - name: Attach the routes
+        if: vars.PUBLIC_ROUTES != ''
+        env:
+          PUBLIC_ROUTES: ${{ vars.PUBLIC_ROUTES }}
+          PUBLIC_ZONE: ${{ vars.PUBLIC_ZONE }}
+        run: |
+          while IFS= read -r pattern; do
+            [ -z "$pattern" ] && continue
+            printf '\n[[routes]]\npattern = "%s"\nzone_name = "%s"\n' "$pattern" "$PUBLIC_ZONE" >> wrangler.toml
+          done <<< "$PUBLIC_ROUTES"
+          tail -12 wrangler.toml
+
       # The build prints the origin it found, but printing is not checking.
       - name: The CSP carries the storage host
         if: vars.STORAGE_PUBLIC_BASE != ''

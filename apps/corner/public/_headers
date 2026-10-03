@@ -41,3 +41,23 @@
 
 /osu/assets/*
   Cache-Control: public, max-age=31536000, immutable
+
+# The index files. They only change when a new ingest runs, and between ingests they are the same
+# ~300 KB brotli on every visit — so five minutes of freshness and a day of stale-while-revalidate:
+# a repeat visit paints from the browser's own copy while the revalidation happens behind it. Left to
+# the static-asset default (`max-age=0, must-revalidate`) all four files cost a round trip every load.
+/osu/index-*.json
+  Cache-Control: public, max-age=300, stale-while-revalidate=86400
+
+/index-*.json
+  Cache-Control: public, max-age=300, stale-while-revalidate=86400
+
+# Replay files. A `.osr` is immutable once written — its name is the map's hash plus the score's
+# timestamp — so it can be kept for a year. Poblin's own replays are never read from here (the
+# browser fetches them from the bucket's hostname); this is the rule that matters to a clone that
+# uploads its replays as its own static assets.
+/osu/replays/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/replays/*
+  Cache-Control: public, max-age=31536000, immutable
