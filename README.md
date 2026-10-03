@@ -51,10 +51,14 @@ audio are not stored here — they come from public mirrors, cached by the visit
    | `CLOUDFLARE_ACCOUNT_ID` | secret | the account the Worker lives in |
    | `STORAGE_PUBLIC_BASE` | variable | `storage.public_base` |
    | `PUBLIC_ZONE` | variable | the zone the routes live on |
-   | `PUBLIC_ROUTES` | variable | the patterns, comma-separated: `example.com/osu/*,example.com/api/osu/*` |
+   | `PUBLIC_ROUTES` | variable | the patterns, comma-separated: `example.com/osu,example.com/osu/*,example.com/api/osu/*` |
 
-   Both routes are needed: the page is at `/osu/`, the profile at `/api/osu/profile` on the site
-   root. With `PUBLIC_ROUTES` unset it publishes to `osu-corner.<account>.workers.dev` instead.
+   All three patterns are needed. `example.com/osu/*` covers everything under the mount point, and
+   `example.com/api/osu/*` is the profile — a prefix scoped to `osu` so nothing else on the site is
+   shadowed. The bare `example.com/osu` is the one that is easy to leave out: `osu/*` does not match
+   `/osu`, so without it the mount point without a trailing slash never reaches the Worker at all
+   and 404s. With it, the assets layer answers the documented default for a directory — a `307` to
+   `/osu/`. With `PUBLIC_ROUTES` unset it publishes to `osu-corner.<account>.workers.dev` instead.
 
    `OSU_CLIENT_ID`, `OSU_CLIENT_SECRET` and `OSU_PROFILE_USER` are set once with
    `wrangler secret put` and survive every deploy, so CI never handles them.
