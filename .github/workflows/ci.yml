@@ -101,8 +101,16 @@ jobs:
       - name: Test
         run: cargo test -p corner-core -p osu-core -p osu-worker -p osu-ingest
 
+      # `~/.cargo/bin` is cached above, so on a cache hit the binary is already there and `cargo
+      # install` refuses to overwrite it. Gated on the pinned version rather than skipped when present,
+      # so a cache holding a *different* version is replaced instead of silently used.
       - name: Install worker-build
-        run: cargo install worker-build --version 0.8.6 --locked
+        run: |
+          if [ "$(worker-build --version 2>/dev/null)" = "0.8.6" ]; then
+            echo "worker-build 0.8.6 already present (cargo cache hit)"
+          else
+            cargo install worker-build --version 0.8.6 --locked --force
+          fi
 
       # Keeping the Rust → wasm toolchain verified on every push, while the surface is one
       # handler, is far cheaper than discovering it is broken on the day a route has to
@@ -133,8 +141,15 @@ jobs:
           key: ${{ runner.os }}-cargo-audit-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-audit-
 
+      # The same cached-bin problem as worker-build above. No version is pinned here, so presence is
+      # the whole check.
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: |
+          if command -v cargo-audit >/dev/null 2>&1; then
+            echo "cargo-audit already present (cargo cache hit)"
+          else
+            cargo install cargo-audit --locked
+          fi
 
       - name: Audit
         run: cargo audit
