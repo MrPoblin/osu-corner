@@ -506,6 +506,70 @@
   }
 
   /*
+   * The grade strip: one pill, seven sections, hairline dividers — the day picker's form, because both are a
+   * short fixed set of choices. Seven separate outlines read as seven unrelated switches and spend more width
+   * on the dividers than the letters.
+   *
+   * No `overflow: hidden`: a lit section paints its own grade's colour and rounds its own corners, and a grade's
+   * colour is what the row showing that grade is already wearing.
+   */
+  .grade-filter {
+    display: inline-flex;
+    align-items: stretch;
+    height: 24px;
+    /* Never wraps: a strip that breaks in half is not a strip. */
+    flex: none;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-sm);
+  }
+
+  .grade-filter__button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    padding: 0 4px;
+    border: 0;
+    border-radius: 0;
+    background-color: transparent;
+    color: var(--color-dim);
+    font-size: 0.72rem;
+    font-weight: 800;
+    cursor: pointer;
+    transition:
+      background-color 150ms var(--ease-out),
+      color 150ms var(--ease-out);
+  }
+
+  .grade-filter__button + .grade-filter__button {
+    border-left: 1px solid var(--color-line);
+  }
+
+  .grade-filter__button:first-child {
+    border-radius: calc(var(--radius-sm) - 1px) 0 0 calc(var(--radius-sm) - 1px);
+  }
+
+  .grade-filter__button:last-child {
+    border-radius: 0 calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px) 0;
+  }
+
+  /*
+   * A forbid section: red and struck through, reading exactly like a mod chip in its `out` state. The ring is
+   * inset rather than a border, because a per-section border would tear the pill's own outline apart.
+   */
+  .grade-filter__button[data-grade-state="out"] {
+    color: #ff9a9a;
+    text-decoration: line-through;
+    box-shadow: inset 0 0 0 1px #ff5a5a;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .grade-filter__button:hover:not([data-grade-state="in"]) {
+      color: var(--color-text);
+    }
+  }
+
+  /*
    * Two rows, explicit: the controls and the count on the first, the mods on their own row.
    *
    * Left as one wrapping flex row, the count was pushed onto a line of its own whenever the chips
@@ -1875,6 +1939,20 @@
     /* Declared after `.toolbar__row .control` so the arrows keep their own, tighter padding. */
     .daypicker > .control {
       padding: 0 8px;
+    }
+
+    /*
+     * Seven letters still share one line here — tighter, not wrapped, and shorter than the chips beside them so
+     * the strip and `pb progression` / `best per diff` fit on the grade line together.
+     */
+    .grade-filter {
+      height: 22px;
+    }
+
+    .grade-filter__button {
+      min-width: 23px;
+      padding: 0 2px;
+      font-size: 0.66rem;
     }
 
     @media (max-width: 400px) {

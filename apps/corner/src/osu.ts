@@ -506,18 +506,38 @@ export const SORTS = [
 
 export type SortKey = (typeof SORTS)[number]["key"];
 
-/** Lower is better, so `max` is the worst grade the filter still admits. */
-export const GRADE_TIERS = [
-  { key: "all", label: "any grade", max: 8 },
-  { key: "a", label: "A and up", max: 4 },
-  { key: "s", label: "S and up", max: 3 },
+/**
+ * The filter's letters, one section of the strip each, best first.
+ *
+ * Seven rather than nine: a hidden grade cannot be read off its letter — XH and X both show "SS", SH and S
+ * both show "S" — and the only thing that tells the pair apart is the mods, which have a filter of their
+ * own. `indices` are positions in `GRADES`, so a shared letter covers its two wire ranks at once.
+ *
+ * Ascending and gapless, which is what lets `GRADE_FILTER_KEYS` be read straight off a play.
+ */
+export const GRADE_FILTERS = [
+  { key: "ss", letter: "SS", indices: [0, 1] },
+  { key: "s", letter: "S", indices: [2, 3] },
+  { key: "a", letter: "A", indices: [4] },
+  { key: "b", letter: "B", indices: [5] },
+  { key: "c", letter: "C", indices: [6] },
+  { key: "d", letter: "D", indices: [7] },
+  { key: "f", letter: "F", indices: [8] },
 ] as const;
 
-export type GradeTierKey = (typeof GRADE_TIERS)[number]["key"];
+export type GradeKey = (typeof GRADE_FILTERS)[number]["key"];
+
+/** `GRADES` position → the filter key that admits it, so a play's `gradeIndex` indexes straight in. */
+export const GRADE_FILTER_KEYS: GradeKey[] = GRADE_FILTERS.flatMap((entry) =>
+  entry.indices.map(() => entry.key),
+);
 
 export interface Query {
   text: string;
-  grade: GradeTierKey;
+  /** Grade letters every result must carry; empty means any grade. */
+  grades: GradeKey[];
+  /** Grade letters no result may carry. */
+  excludedGrades: GradeKey[];
   /** Acronyms every result must carry. */
   mods: string[];
   /** Acronyms no result may carry. */
@@ -534,7 +554,8 @@ export interface Query {
 
 export const DEFAULT_QUERY: Query = {
   text: "",
-  grade: "all",
+  grades: [],
+  excludedGrades: [],
   mods: [],
   excluded: [],
   pbOnly: false,
@@ -589,12 +610,16 @@ function valueOf(play: Play, key: SortKey): number {
  */
 export function search(plays: Play[], query: Query): Play[] {
   const text = query.text.trim().toLowerCase();
-  const tier = GRADE_TIERS.find((entry) => entry.key === query.grade) ?? GRADE_TIERS[0];
+  const graded = query.grades.length > 0 || query.excludedGrades.length > 0;
   const bests = query.pbOnly ? personalBests(plays) : null;
   const perDiff = query.bestPerDiff ? bestPerDifficulty(plays) : null;
 
   const matched = plays.filter((play) => {
-    if (play.gradeIndex > tier.max) return false;
+    if (graded) {
+      const key = GRADE_FILTER_KEYS[play.gradeIndex];
+      if (query.grades.length > 0 && !query.grades.includes(key)) return false;
+      if (query.excludedGrades.includes(key)) return false;
+    }
 
     if (bests && !bests.has(play.id)) return false;
     if (perDiff && !perDiff.has(play.id)) return false;

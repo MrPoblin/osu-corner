@@ -11,7 +11,8 @@ import {
   formatAccuracy,
   formatNumber,
   formatRelative,
-  GRADE_TIERS,
+  GRADE_FILTERS,
+  GRADES,
   modColour,
   modName,
   modsByCategory,
@@ -20,7 +21,7 @@ import {
   search,
   starColour,
 } from "./osu.ts";
-import type { Mod, Play, Query } from "./osu.ts";
+import type { GradeKey, Mod, Play, Query } from "./osu.ts";
 import type { ScoreMode } from "./config.ts";
 
 /**
@@ -44,6 +45,16 @@ const OVERSCAN = 6;
 
 /** Artwork loads are delayed so sweeping the list does not fire forty downloads. */
 const PREVIEW_DELAY = 90;
+
+/**
+ * off → require → forbid → off, the tri-state both filter chips share: a list of what must be there, a list of
+ * what must not, and nothing in either meaning "don't care".
+ */
+function cycle<T>(required: T[], forbidden: T[], value: T): [T[], T[]] {
+  if (required.includes(value)) return [required.filter((v) => v !== value), [...forbidden, value]];
+  if (forbidden.includes(value)) return [required, forbidden.filter((v) => v !== value)];
+  return [[...required, value], forbidden];
+}
 
 interface Props {
   mode: string;
@@ -215,16 +226,19 @@ export function ReplayList({ mode, plays, onPreview, scoreMode }: Props) {
   const enterRow = useCallback((index: number) => move(index), [results]);
   const focusRow = useCallback((index: number) => setSelected(index), []);
 
-  /** off → require → forbid → off, so a mod chip can ask for and against the same acronym. */
+  /** off → require → forbid → off, so a chip can ask for and against the same thing. */
   function cycleMod(acronym: string) {
     setQuery((q) => {
-      if (q.mods.includes(acronym)) {
-        return { ...q, mods: q.mods.filter((m) => m !== acronym), excluded: [...q.excluded, acronym] };
-      }
-      if (q.excluded.includes(acronym)) {
-        return { ...q, excluded: q.excluded.filter((m) => m !== acronym) };
-      }
-      return { ...q, mods: [...q.mods, acronym] };
+      const [mods, excluded] = cycle(q.mods, q.excluded, acronym);
+      return { ...q, mods, excluded };
+    });
+  }
+
+  /** The same cycle for a grade letter, so both filters read the same way. */
+  function cycleGrade(key: GradeKey) {
+    setQuery((q) => {
+      const [grades, excludedGrades] = cycle(q.grades, q.excludedGrades, key);
+      return { ...q, grades, excludedGrades };
     });
   }
 
@@ -303,18 +317,39 @@ export function ReplayList({ mode, plays, onPreview, scoreMode }: Props) {
         </div>
 
         <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Grade">
-          {GRADE_TIERS.map((tier) => (
-            <button
-              key={tier.key}
-              type="button"
-              className="chip"
-              aria-pressed={query.grade === tier.key}
-              style={query.grade === tier.key ? { backgroundColor: "var(--accent)" } : undefined}
-              onClick={() => setQuery((q) => ({ ...q, grade: tier.key }))}
-            >
-              {tier.label}
-            </button>
-          ))}
+          {/*
+           * The day picker's form: one pill, seven sections, hairlines between — a wall of seven separate chips
+           * would be seven outlines to read instead of one control. A section toggles off → must → must not, the
+           * same as a mod chip, and lights up in its own grade's colour (the row's colour, from `GRADES`).
+           */}
+          <div className="grade-filter">
+            {GRADE_FILTERS.map((entry) => {
+              const state = query.grades.includes(entry.key)
+                ? "in"
+                : query.excludedGrades.includes(entry.key)
+                  ? "out"
+                  : "off";
+              const grade = GRADES[entry.indices[0]];
+
+              return (
+                <button
+                  key={entry.key}
+                  type="button"
+                  className="grade-filter__button"
+                  data-grade-state={state}
+                  aria-pressed={state !== "off"}
+                  /* Spelled out, because `aria-pressed` alone cannot say must from must-not. */
+                  aria-label={
+                    state === "off" ? entry.letter : `${entry.letter} ${state === "in" ? "only" : "excluded"}`
+                  }
+                  style={state === "in" ? { backgroundColor: grade.colour, color: grade.ink } : undefined}
+                  onClick={() => cycleGrade(entry.key)}
+                >
+                  {entry.letter}
+                </button>
+              );
+            })}
+          </div>
 
           {/* The progression: only the plays that raised the best pp at the time. */}
           <button
